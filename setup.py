@@ -6,6 +6,7 @@ setup(
     version='0.1',
     license='MIT',
     packages=[
-        'rlplay'
+        'rlplay',
+        'rlplay.zoo',  # models and implementations
     ]
 )
