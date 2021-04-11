@@ -1,3 +1,3 @@
 from .simple import SimpleBuffer
 
-from .simple import ensure_schema, to_device
+from .schema import ensure_schema, to_device
