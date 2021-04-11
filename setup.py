@@ -8,5 +8,6 @@ setup(
     packages=[
         'rlplay',
         'rlplay.zoo',  # models and implementations
+        'rlplay.buffer',  # replay, rollout and other buffers
     ]
 )
