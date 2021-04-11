@@ -29,7 +29,10 @@ def ensure_schema(batch, *, schema=None):
 
     # if batch is a `torch.Tensor` then we're in the base case
     if isinstance(batch, torch.Tensor):
-        if not isinstance(schema, dict):
+        if isinstance(schema, torch.dtype):
+            return batch.to(dtype=schema)
+
+        elif not isinstance(schema, dict):
             raise TypeError(f'`schema` for a torch.Tensor '
                             f'must be a `dict`. Got `{schema}`.')
 
