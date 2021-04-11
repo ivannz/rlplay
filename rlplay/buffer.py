@@ -71,19 +71,24 @@ def ensure_schema(batch, *, schema=None):
 
 def to_device(batch, *, device):
     """Device mover based on `torch_collate`."""
-    if isinstance(batch, tuple) and hasattr(batch, '_fields'):
-        return type(batch)(*(to_device(value, device=device)
-                           for value in batch))
+    if device is None:
+        return batch
+
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device)
+
+    if isinstance(batch, abc.Sequence):
+        data = [to_device(v, device=device) for v in batch]
+
+        if isinstance(batch, tuple) and hasattr(batch, '_fields'):
+            return type(batch)(*data)
+
+        return type(batch)(data)
 
     elif isinstance(batch, abc.Mapping):
-        return {key: to_device(value, device=device)
-                for key, value in batch.items()}
-
-    elif isinstance(batch, abc.Sequence):
-        return [to_device(value, device=device) for value in batch]
-
-    elif isinstance(batch, torch.Tensor):
-        return batch.to(device)
+        return type(batch)({
+            k: to_device(v, device=device) for k, v in batch.items()
+        })
 
     # only `torch.Tensor` can be moved, everything else is kept as is
     return batch
