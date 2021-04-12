@@ -4,7 +4,7 @@ from torch.nn.functional import smooth_l1_loss
 
 
 @torch.enable_grad()
-def loss(batch, *, module, target, gamma=0.95):
+def loss(batch, *, module, target, gamma=0.95, double=True):
     r"""Compute the Double-DQN loss.
 
     Details
@@ -39,11 +39,18 @@ def loss(batch, *, module, target, gamma=0.95):
     # get Q(s_t, a_t; \theta)
     q_replay = module(batch['state']).gather(-1, batch['action'].unsqueeze(-1))
     with torch.no_grad():
-        # get \hat{a} = \arg \max_a Q(s_{t+1}, a; \theta)
-        hat_a = module(batch['state_next']).max(dim=-1).indices
+        # get Q(s_{t+1}, \cdot; \theta^-)
+        q_target = target(batch['state_next'])
+        if double:
+            # get \hat{a} = \arg \max_a Q(s_{t+1}, a; \theta)
+            hat_a = module(batch['state_next']).max(dim=-1).indices
 
-        # get \hat{q} = Q(s_{t+1}, \hat{a}; \theta^-)
-        q_value = target(batch['state_next']).gather(-1, hat_a.unsqueeze(-1))
+            # get \hat{q} = Q(s_{t+1}, \hat{a}; \theta^-)
+            q_value = q_target.gather(-1, hat_a.unsqueeze(-1))
+
+        else:
+            # get \max_a Q(s_{t+1}, a; \theta^-)
+            q_value = q_target.max(dim=-1).values
 
         # mask terminal states and get $r_t + \gamma \hat{q}_t 1_{T_t}$
         q_value.masked_fill_(batch['done'].unsqueeze(-1), 0.)
