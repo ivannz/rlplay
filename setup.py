@@ -9,5 +9,6 @@ setup(
         'rlplay',
         'rlplay.zoo',  # models and implementations
         'rlplay.buffer',  # replay, rollout and other buffers
+        'rlplay.algo',  # losses, pieces of algorithms
     ]
 )
