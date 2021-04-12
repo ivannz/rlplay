@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from gym import ObservationWrapper
+from gym import ObservationWrapper, Wrapper
 from gym.spaces import Box
 
 from cv2 import cvtColor, resize
@@ -29,6 +29,7 @@ class AtariObservation(ObservationWrapper):
         assert all(x > 0 for x in shape), f'Invalid shape {shape}'
         # check if the input env's states are rgb pixels [h x w x 3]
         space = env.observation_space
+        assert isinstance(space, Box)
         assert len(space.shape) == 3 and space.shape[-1] == 3
 
         # override the observation space
@@ -41,6 +42,38 @@ class AtariObservation(ObservationWrapper):
         dsize = self.observation_space.shape[::-1]
         return resize(cvtColor(observation, COLOR_RGB2GRAY),
                       dsize, interpolation=INTER_AREA)
+
+
+class ObservationQueue(Wrapper):
+    """Simple queue of the most recent observations."""
+    def __init__(self, env, n_size=4):
+        space = env.observation_space
+        assert isinstance(space, Box)
+
+        # override the observation space
+        super().__init__(env)
+        self.observation_space = Box(low=np.stack([space.low] * n_size),
+                                     high=np.stack([space.high] * n_size),
+                                     shape=(n_size, *space.shape),
+                                     dtype=space.dtype)
+        self.reset()
+
+    def reset(self, **kwargs):
+        space = self.observation_space
+
+        self.buffer = np.empty(space.shape, dtype=space.dtype)
+        self.buffer[:] = self.env.reset(**kwargs)
+
+        return self.buffer[:]  # make sure to return a copy
+
+    def step(self, action):
+        # evict the oldest frame
+        # XXX `np.roll` is not the most efficient solution
+        self.buffer = np.roll(self.buffer, shift=-1, axis=0)
+        self.buffer[-1], reward, done, info = self.env.step(action)
+
+        # make sure to return a copy
+        return self.buffer[:], reward, done, info
 
 
 def linear(t, t0=0, t1=100, v0=1., v1=0.):
