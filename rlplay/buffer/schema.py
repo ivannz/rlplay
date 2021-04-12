@@ -4,7 +4,7 @@ from collections import abc
 from itertools import zip_longest
 
 
-def ensure_schema(batch, *, schema=None):
+def ensure(batch, *, schema=None):
     """Ensure the specified device-dtype schema on a structured container.
 
     Details
@@ -41,7 +41,7 @@ def ensure_schema(batch, *, schema=None):
     if isinstance(batch, abc.Sequence):  # (tuple, namedtuple, list, etc)
         try:
             pairs = zip_longest(batch, schema, fillvalue=None)
-            data = [ensure_schema(v, schema=s) for v, s in pairs]
+            data = [ensure(v, schema=s) for v, s in pairs]
 
         except RuntimeError:
             raise ValueError(
@@ -59,7 +59,7 @@ def ensure_schema(batch, *, schema=None):
     elif isinstance(batch, abc.Mapping):  # (dict, OrderedDict, etc)
         # a `dict` schema is allowed to have missing keys
         return type(batch)({
-            k: ensure_schema(v, schema=schema.get(k)) for k, v in batch.items()
+            k: ensure(v, schema=schema.get(k)) for k, v in batch.items()
         })
 
     # schema does not apply to anything else: keep it as is
