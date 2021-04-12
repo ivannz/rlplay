@@ -45,6 +45,11 @@ def update_target_model(*, src, dst):
 
 # wandb mode
 wandb_mode = 'online'  # 'disabled'
+n_checkpoint_frequency = 250
+render = True
+# `monitor_gym` makes wnadb patch gym's ImageRecorder with a `wandb.log({})`,
+#  without `commit=False`, which messes with the logging in the main loop.
+monitor_gym = False
 
 # setup folders for the run
 root = os.path.abspath('./runs')
@@ -53,15 +58,12 @@ os.makedirs(root, exist_ok=True)
 path_ckpt = os.path.join(root, 'checkpoints')
 os.makedirs(path_ckpt, exist_ok=True)
 
-path_wandb = os.path.join(root, 'wandb')
-os.makedirs(path_wandb, exist_ok=True)
-
 # hyperparamters
 config = dict(
     seed=None,  # 897_458_056
     gamma=0.99,
     n_batch_size=32,
-    n_transitions=50_0+00,
+    n_transitions=50_00+0,
     n_steps_total=10_000_0+00,
     n_freeze_frequency=10_0+00,
     lr=2e-3,  # 25e-5,
@@ -79,8 +81,8 @@ device = torch.device('cpu')
 # wandb is gud frmaewrk u shud uze plaeaze
 with wandb.init(
          tags=['d-dqn', 'test', 'breakout'],
-         config=config, monitor_gym=True,
-         mode=wandb_mode, dir=path_wandb) as experiment:
+         config=config, monitor_gym=monitor_gym,
+         mode=wandb_mode, dir=root) as experiment:
 
     config = experiment.config
 
@@ -90,7 +92,9 @@ with wandb.init(
     env = ObservationQueue(FrameSkip(env, n_frames=4, kind='max'), n_size=4)
 
     # wandb-friendly monitor
-    env = Monitor(env, directory=mkdtemp(prefix='_mon', dir=root), force=True)
+    if monitor_gym:
+        env = Monitor(env, force=True,
+                      directory=mkdtemp(prefix='mon_', dir=root))
 
     # set env seed
     if config['seed'] is not None:
@@ -125,7 +129,8 @@ with wandb.init(
 
     # request immediate env reset
     done, n_episodes, n_qnet_updates = True, 0, 0
-    n_episode_start, f_episode_reward, n_freeze_countdown = 0, 0., 0
+    n_episode_start, f_episode_reward = 0, 0.
+    n_checkpoint_countdown, n_freeze_countdown = 0, 0
 
     # count burn-in as well
     n_total_steps = config['n_steps_total'] + config['n_transitions']
@@ -137,13 +142,15 @@ with wandb.init(
                 'n_episodes': n_episodes,
                 'n_duration': n_step - n_episode_start,
                 'f_episode_reward': f_episode_reward,
-            }, step=n_step)
+            }, step=n_step, commit=False)
+            assert experiment.step == n_step
 
             # begin a new episode
             n_episodes += 1
             n_episode_start, f_episode_reward = n_step, 0.
             state, done = env.reset(), False
-            env.render('human')
+            if render:
+                env.render('human')
 
         # epsilon-greedy tracks sgd updates
         epsilon_ = epsilon_schedule(n_qnet_updates)
@@ -157,7 +164,8 @@ with wandb.init(
 
         # get the environment's response and store it
         state_next, reward, done, info = env.step(action)
-        env.render('human')
+        if render:
+            env.render('human')
 
         # XXX `info` may have different fields depending on the env
         replay.commit(state=state, action=action, reward=reward,
@@ -171,7 +179,8 @@ with wandb.init(
             'f_step_time': time.monotonic() - f_step_start,
             'f_epsilon': epsilon_,
             'f_reward': reward,
-        }, step=n_step)
+        }, step=n_step, commit=False)
+        assert experiment.step == n_step
 
         if len(replay) < config['n_transitions']:
             continue
@@ -184,7 +193,7 @@ with wandb.init(
         # sgd step
         optim.zero_grad()
         loss.backward()
-        f_grad_norm = clip_grad_norm_(q_net.parameters(), max_norm=1.0)
+        f_grad_norm = float(clip_grad_norm_(q_net.parameters(), max_norm=1.0))
         optim.step()
         n_qnet_updates += 1
 
@@ -198,19 +207,22 @@ with wandb.init(
         experiment.log({
             'loss': float(loss),
             'td_error': float(abs(info['td_error']).mean()),
-            'b_target_freeze': n_freeze_countdown == config['n_freeze_frequency'],
             'n_qnet_updates': n_qnet_updates,
             'f_grad_norm': f_grad_norm,
-        }, step=n_step)
+        }, step=n_step, commit=False)
+        assert experiment.step == n_step
 
-        # save the current models
-        torch.save({
-            'q_net': q_net.state_dict(),
-        }, os.path.join(path_ckpt, 'latest.pt'))
+        # from time to time save the current Q-net
+        if n_checkpoint_countdown <= 0:
+            n_checkpoint_countdown = n_checkpoint_frequency
+            torch.save({
+                'q_net': q_net.state_dict(),
+            }, os.path.join(path_ckpt, 'latest.pt'))
+        n_checkpoint_countdown -= 1
 # end with
 
 
-# infinite rollout
+# infinite post training rollout
 @torch.no_grad()
 def rollout():
     obs = env.reset()
@@ -235,5 +247,5 @@ def rollout():
 
 
 with env:
-    while rollout():
+    while render and rollout():
         pass
