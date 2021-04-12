@@ -8,18 +8,27 @@ from cv2 import cvtColor, resize
 from cv2 import COLOR_RGB2GRAY, INTER_AREA
 
 
-class ImageToTensor(ObservationWrapper):
+class ToTensor(ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.observation_space = Box(low=0., high=1., dtype=np.float32,
+                                     shape=env.observation_space.shape)
+
+    def observation(self, observation):
+        return np.divide(observation, 255, dtype=np.float32)
+
+
+class ChannelFirst(ObservationWrapper):
     """Convert rgb-image observations to scaled channel-first tensors the on-the-fly."""
     def __init__(self, env):
         super().__init__(env)
         self.observation_space = Box(
             low=self.observation(env.observation_space.low),
             high=self.observation(env.observation_space.high),
-            dtype=np.float32)
+            dtype=env.observation_space.dtype)
 
     def observation(self, observation):
-        observation = observation.transpose(2, 0, 1)
-        return np.divide(observation, 255, dtype=np.float32)
+        return observation.transpose(2, 0, 1)
 
 
 class AtariObservation(ObservationWrapper):
