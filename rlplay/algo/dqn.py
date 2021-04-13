@@ -4,7 +4,7 @@ from torch.nn.functional import smooth_l1_loss
 
 
 @torch.enable_grad()
-def loss(batch, *, module, target, gamma=0.95, double=True):
+def loss(batch, *, module, target, gamma=0.95, double=True, weights=None):
     r"""Compute the Double-DQN loss.
 
     Details
@@ -34,6 +34,8 @@ def loss(batch, *, module, target, gamma=0.95, double=True):
     'state_next' : Tensor [batch x *space] of `float32`
           'done' : Tensor [batch] of `bool`
           'info' : dict
+
+    `weights` is expected to be None or a Tensor of shape [batch] of `float32`
     """
 
     # get Q(s_t, a_t; \theta)
@@ -60,6 +62,10 @@ def loss(batch, *, module, target, gamma=0.95, double=True):
         td_error = q_replay - q_value
     # end with
 
-    # the td-error loss
-    loss = smooth_l1_loss(q_replay, q_value, reduction='mean')
-    return loss, {'td_error': td_error}
+    # the (weighted) td-error loss
+    if weights is None:
+        loss = smooth_l1_loss(q_replay, q_value, reduction='mean')
+        return loss, {'td_error': td_error}
+
+    values = smooth_l1_loss(q_replay, q_value, reduction='none')
+    return weights.mul(values).mean(), {'td_error': td_error}
