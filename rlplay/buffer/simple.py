@@ -1,7 +1,6 @@
 import torch
 
 from random import Random
-from collections import deque
 
 from torch.utils.data.dataloader import default_collate as torch_collate
 
@@ -9,13 +8,18 @@ from torch.utils.data.dataloader import default_collate as torch_collate
 class SimpleBuffer:
     """A simple slow ring buffer with no schema which mimics a dataloader."""
     def __init__(self, n_capacity, n_batch_size=32, *, random=None):
-        self.n_batch_size = n_batch_size
         self.random_ = random or Random()
-        self.buffer = deque(maxlen=n_capacity)
+        self.n_capacity, self.n_batch_size = n_capacity, n_batch_size
+        self.buffer, self.position = [], 0
 
     def commit(self, **kwdata):
         """Put key-value data into the buffer, evicting the oldest record if full."""
-        self.buffer.append(kwdata)
+        if len(self.buffer) < self.n_capacity:
+            self.buffer.append(kwdata)  # grow buffer
+
+        else:
+            self.buffer[self.position] = kwdata
+        self.position = (1 + self.position) % self.n_capacity
 
     def __len__(self):
         """The used capacity of the buffer."""
