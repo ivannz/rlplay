@@ -30,6 +30,10 @@ class SimpleBuffer:
         """Get the item at a particular index in the buffer."""
         return self.buffer[index]
 
+    def __setitem__(self, index, value):
+        # item attribute assignment is ingored by simple buffers
+        pass
+
     def __iter__(self):
         """Iterate over random batches of key-value data from the buffer."""
         # XXX `Random.sample` is not very fast performing
