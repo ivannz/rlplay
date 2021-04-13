@@ -10,7 +10,8 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 
 from rlplay.algo import dqn
-from rlplay.buffer import SimpleBuffer, to_device, ensure
+from rlplay.buffer import SimpleBuffer, PriorityBuffer
+from rlplay.buffer import to_device, ensure
 from rlplay.utils import linear, greedy
 
 from rlplay.utils import ToTensor
@@ -63,16 +64,23 @@ config = dict(
     seed=None,  # 897_458_056
     gamma=0.99,
     n_batch_size=32,
-    n_transitions=50_00+0,
+    n_transitions=50_00+0,  # 500 is a really small replay buffer
     n_steps_total=10_000_0+00,
     n_freeze_frequency=10_0+00,
     lr=2e-3,  # 25e-5,
     epsilon=dict(
         t0=0,
-        t1=1_000_0+00,
+        t1=3_000_0+00,  # t1=1_000_0+00,
         v0=1e-0,
         v1=1e-1,
-    )
+    ),
+    beta=dict(
+        t0=0,
+        t1=5_000_0+00,
+        v0=4e-1,
+        v1=1e-0,
+    ),
+    replay__alpha=0.6,
 )
 
 # the device
@@ -103,7 +111,10 @@ with wandb.init(
     # dtype schema for iterating over the buffer
     schema = dict(state=torch.float, action=torch.long, reward=torch.float,
                   state_next=torch.float, done=torch.bool, info=None)
-    replay = SimpleBuffer(config['n_transitions'], config['n_batch_size'])
+
+    # replay = SimpleBuffer(config['n_transitions'], config['n_batch_size'])
+    replay = PriorityBuffer(config['n_transitions'], config['n_batch_size'],
+                            alpha=config['replay__alpha'])
 
     # on-device storage for state
     state_ = torch.empty(1, *env.observation_space.shape,
@@ -126,6 +137,7 @@ with wandb.init(
     # the optimizer and schedulers
     optim = torch.optim.Adam(q_net.parameters(), lr=config['lr'])
     epsilon_schedule = partial(linear, **config['epsilon'])
+    beta_schedule = partial(linear, **config['beta'])
 
     # request immediate env reset
     done, n_episodes, n_qnet_updates = True, 0, 0
@@ -143,7 +155,7 @@ with wandb.init(
                 'n_duration': n_step - n_episode_start,
                 'f_episode_reward': f_episode_reward,
             }, step=n_step, commit=False)
-            assert experiment.step == n_step
+            # assert experiment.step == n_step
 
             # begin a new episode
             n_episodes += 1
@@ -180,15 +192,28 @@ with wandb.init(
             'f_epsilon': epsilon_,
             'f_reward': reward,
         }, step=n_step, commit=False)
-        assert experiment.step == n_step
 
         if len(replay) < config['n_transitions']:
             continue
 
         # train for one batch only if the buffer has enough data.
-        batch = ensure(next(iter(replay)), schema=schema)
-        loss, info = dqn.loss(to_device(batch, device=device), gamma=config['gamma'],
-                              module=q_net, target=target_q_net)
+        batch = next(iter(replay))
+        batch = to_device(ensure(batch, schema=schema), device=device)
+
+        # beta scheduling for loss weights
+        weight = batch.get('_weight')
+        if weight is not None:
+            beta = beta_schedule(n_qnet_updates)
+            weight = weight.to(state_).pow_(-beta)
+
+        loss, info = dqn.loss(batch, gamma=config['gamma'],
+                              module=q_net, target=target_q_net,
+                              weights=weight)
+
+        # reassign priority
+        priority = abs(info['td_error']).cpu().squeeze_().add_(1e-6)
+        for j, p in zip(batch['_index'], priority):
+            replay[j] = p
 
         # sgd step
         optim.zero_grad()
@@ -210,7 +235,6 @@ with wandb.init(
             'n_qnet_updates': n_qnet_updates,
             'f_grad_norm': f_grad_norm,
         }, step=n_step, commit=False)
-        assert experiment.step == n_step
 
         # from time to time save the current Q-net
         if n_checkpoint_countdown <= 0:
