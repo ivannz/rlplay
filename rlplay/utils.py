@@ -87,12 +87,12 @@ class ObservationQueue(Wrapper):
 
 class FrameSkip(Wrapper):
     """Convert image observation space from RGB to grayscale and downsample."""
-    def __init__(self, env, n_frames=4, *, kind='max', n_ignore=2):
+    def __init__(self, env, n_frames=4, *, kind='max', n_pool=2):
         assert isinstance(env.observation_space, Box)
         assert kind in ('max', 'average', 'last')
 
         super().__init__(env)
-        self.n_frames, self.n_ignore, self.kind = n_frames, n_ignore, kind
+        self.n_frames, self.n_pool, self.kind = n_frames, n_pool, kind
         if kind == 'max':
             self.op = lambda x: np.max(x, axis=0)
 
@@ -104,12 +104,17 @@ class FrameSkip(Wrapper):
 
     def step(self, action):
         # stick to the same action for the specified number of steps
-        obs, reward, done, info = zip(*(
-            self.env.step(action) for _ in range(self.n_frames)
-        ))
+        results = []
+        for _ in range(self.n_frames):
+            obs, reward, done, info = self.env.step(action)
+            results.append((obs, reward, done, info))
+            if done:
+                break
+
+        obs, reward, done, info = zip(*results)
 
         # aggregate appropriately
-        obs = self.op(obs[self.n_ignore:])
+        obs = self.op(obs[-self.n_pool:])
         return obs, sum(reward), any(done), info
 
 
