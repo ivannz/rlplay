@@ -204,7 +204,7 @@ with wandb.init(
         weight = batch.get('_weight')
         if weight is not None:
             beta = beta_schedule(n_qnet_updates)
-            weight = weight.to(state_).pow_(-beta)
+            weight = weight.to(state_).pow_(beta)
 
         loss, info = dqn.loss(batch, gamma=config['gamma'],
                               module=q_net, target=target_q_net,

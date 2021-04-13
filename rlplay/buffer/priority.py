@@ -127,10 +127,17 @@ class PriorityBuffer:
         indices = [_prefix(self._sum, self.random_.random() * self._sum[1])
                    for _ in range(self.n_batch_size)]
 
+        # Importance weights are $\omega_j = \frac{\pi_j}{\beta_j}$, for
+        #  target distributinon `\pi` and sampling distributinon `\beta`
+        # We assume uniform $\pi_j = \frac1N$ and prioritized $
+        #    \beta_j = \frac{p_j^\alpha}{\sum_k p_k^\alpha}
+        # $, and normalize by the maximal weight `\max_j \omega_j`. After
+        # simplification this yields the formula below.
+
         # use torch's versatile but slow default collate function
         # XXX moving it out of the loop does not seem to yield speed ups
         return torch_collate([
             {**self[j], '_index': j,
-             '_weight': _value(self._sum, j) / self._min[1]
+             '_weight': self._min[1] / _value(self._sum, j)
              } for j in indices
         ])
