@@ -24,19 +24,25 @@ from tempfile import mkdtemp
 from gym.wrappers import Monitor
 
 
-class ResetOnLostLive(gym.Wrapper):
-    def reset(self, **kwargs):
-        obs = super().reset(**kwargs)
-        self.lives = self.unwrapped.ale.lives()
-        return obs
+class TerminateOnLostLive(gym.Wrapper):
+    @property
+    def ale(self):
+        return self.env.unwrapped.ale
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        if self.env.unwrapped.ale.lives() < self.lives:
-            self.reset()
-            done = True
+
+        # detect loss-of-life
+        current = self.ale.lives()
+        done = done or current < self.lives
+        self.lives = current
 
         return obs, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = super().reset(**kwargs)
+        self.lives = self.ale.lives()
+        return obs
 
 
 @torch.no_grad()
@@ -95,9 +101,12 @@ with wandb.init(
     config = experiment.config
 
     # an instance of atari Breakout-v4
-    env = ResetOnLostLive(gym.make('BreakoutNoFrameskip-v4'))
-    env = ToTensor(AtariObservation(env, shape=(84, 84)))
-    env = ObservationQueue(FrameSkip(env, n_frames=4, kind='max'), n_size=4)
+    env = gym.make('BreakoutNoFrameskip-v4')
+    # env = TerminateOnLostLive(env)  # messes up the randomness of ALE
+    env = AtariObservation(env, shape=(84, 84))
+    env = ToTensor(env)
+    env = FrameSkip(env, n_frames=4, kind='max')
+    env = ObservationQueue(env, n_size=4)
 
     # wandb-friendly monitor
     if monitor_gym:
