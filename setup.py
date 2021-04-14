@@ -10,5 +10,12 @@ setup(
         'rlplay.zoo',  # models and implementations
         'rlplay.buffer',  # replay, rollout and other buffers
         'rlplay.algo',  # losses, pieces of algorithms
+        'rlplay.utils',  # wrappers, custom imshow, and other tools
+    ],
+    install_requires=[
+        'torch',
+        'numpy',
+        'gym[atari]',
+        'opencv-python',
     ]
 )
