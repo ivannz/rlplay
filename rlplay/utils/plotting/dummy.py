@@ -26,6 +26,24 @@ class ImageViewer:
 
 
 class Conv2DViewer:
+    def __init__(self, *args, **kwargs):
+        self._enabled = True
+
+    @property
+    def enabled(self):
+        return self._enabled
+
+    def register(self, label, module):
+        pass
+
+    def toggle(self, mode=None):
+        if mode is None:
+            mode = not self._enabled
+
+        old_mode = self._enabled
+        self._enabled = bool(mode)
+        return old_mode
+
     def __enter__(self):
         return self
 
