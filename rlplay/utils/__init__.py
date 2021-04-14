@@ -1,4 +1,4 @@
-from .common import linear, act
+from .common import linear, greedy
 
 from .wrappers import ToTensor, ChannelFirst, AtariObservation
 from .wrappers import ObservationQueue, FrameSkip
