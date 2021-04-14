@@ -7,7 +7,7 @@ from random import randint
 
 from pyglet import gl
 from pyglet.image import ImageData
-from pyglet.window import Window, key
+from pyglet.window import Window, key, mouse
 
 
 class ImageViewer(Window):
@@ -43,6 +43,15 @@ class ImageViewer(Window):
             return
 
         super().on_key_press(symbol, modifiers)
+
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        """Move the window live on mouse drag."""
+        if buttons & mouse.LEFT:
+            x, y = self.get_location()
+            self.set_location(x + dx, y - dy)
+            return
+
+        super().on_mouse_drag(x, y, dx, dy, buttons, modifiers)
 
     def on_draw(self, *, flip=False):
         self.switch_to()
