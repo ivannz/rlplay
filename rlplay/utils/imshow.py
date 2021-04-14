@@ -77,6 +77,9 @@ class ImageViewer(Window):
             self.set_size(texture.width, texture.height)
         self.texture = texture
 
+        self.render()
+
+    def render(self):
         # a piece of event loop
         self.dispatch_events()
         self.switch_to()
