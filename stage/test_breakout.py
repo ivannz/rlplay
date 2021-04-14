@@ -24,6 +24,7 @@ env = FrameSkip(env, n_frames=4, kind='max')
 env = ObservationQueue(env, n_size=4)
 
 q_net = BreakoutQNet(env.action_space.n).to(device)
+print(repr(q_net))
 
 checkpoint = os.path.join(path_ckpt, 'latest.pt')
 if os.path.isfile(checkpoint):

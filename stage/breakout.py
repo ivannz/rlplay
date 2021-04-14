@@ -54,7 +54,7 @@ def update_target_model(*, src, dst):
 
 # wandb mode
 wandb_mode = 'online'  # 'disabled'
-wandb_mode = 'disabled'
+
 n_checkpoint_frequency = 250
 render = True
 # `monitor_gym` makes wnadb patch gym's ImageRecorder with a `wandb.log({})`,
@@ -168,6 +168,9 @@ with wandb.init(
     if render:
         viewer = Conv2DViewer(q_net, activation=torch.relu, pixel=(5, 5))
         viewer.toggle(False)
+
+    q_net.train()
+    target_q_net.eval()  # the target has dropout and batch norms deactivated
 
     # count burn-in as well
     n_total_steps = config['n_steps_total'] + config['n_transitions']
