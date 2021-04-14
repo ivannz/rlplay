@@ -3,4 +3,6 @@ from .common import linear, greedy
 from .wrappers import ToTensor, ChannelFirst, AtariObservation
 from .wrappers import ObservationQueue, FrameSkip
 
-# from .imshow import ImageViewer  # not expored due to heavy dependencies 
+from .schema import ensure, to_device
+
+# from .imshow import ImageViewer  # not exported due to heavy dependencies
