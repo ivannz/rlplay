@@ -10,7 +10,8 @@ setup(
         'rlplay.zoo',  # models and implementations
         'rlplay.buffer',  # replay, rollout and other buffers
         'rlplay.algo',  # losses, pieces of algorithms
-        'rlplay.utils',  # wrappers, custom imshow, and other tools
+        'rlplay.utils',  # wrappers, plotting, and other tools
+        'rlplay.utils.plotting',  # custom imshow, conv2d visualizer and other
     ],
     install_requires=[
         'torch',
