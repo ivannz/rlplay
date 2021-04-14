@@ -38,6 +38,7 @@ class ImageViewer(Window):
         super().on_key_press(symbol, modifiers)
 
     def on_draw(self, *, flip=False):
+        self.switch_to()
         self.clear()
 
         if hasattr(self, 'texture'):
@@ -62,6 +63,9 @@ class ImageViewer(Window):
         else:
             raise TypeError(f'`data` is not an image `{data.shape}`.')
 
+        # ensure current window's gl context
+        self.switch_to()
+
         # convert image data to gl texture
         gl.glTexParameteri(
             gl.GL_TEXTURE_2D,
@@ -80,9 +84,10 @@ class ImageViewer(Window):
         self.render()
 
     def render(self):
+        self.switch_to()
+
         # a piece of event loop
         self.dispatch_events()
-        self.switch_to()
 
         # manually call on-draw make it immediate
         self.on_draw(flip=True)
