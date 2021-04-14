@@ -11,12 +11,14 @@ from torch.nn.utils import clip_grad_norm_
 
 from rlplay.algo import dqn
 from rlplay.buffer import SimpleBuffer, PriorityBuffer
-from rlplay.buffer import to_device, ensure
 from rlplay.utils import linear, greedy
+from rlplay.utils import to_device, ensure
 
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
 from rlplay.zoo.toy import BreakoutQNet
+
+from rlplay.utils.plotting import Conv2DViewer, DummyConv2DViewer
 
 from functools import partial
 from tempfile import mkdtemp
@@ -52,6 +54,7 @@ def update_target_model(*, src, dst):
 
 # wandb mode
 wandb_mode = 'online'  # 'disabled'
+wandb_mode = 'disabled'
 n_checkpoint_frequency = 250
 render = True
 # `monitor_gym` makes wnadb patch gym's ImageRecorder with a `wandb.log({})`,
@@ -71,12 +74,12 @@ config = dict(
     gamma=0.99,
     n_batch_size=32,
     n_transitions=50_00+0,  # 500 is a really small replay buffer
-    n_steps_total=10_000_0+00,
+    n_steps_total=30_000_0+00,
     n_freeze_frequency=10_0+00,
     lr=2e-3,  # 25e-5,
     epsilon=dict(
         t0=0,
-        t1=3_000_0+00,  # t1=1_000_0+00,
+        t1=1_000_00+0,  # t1=1_000_0+00,
         v0=1e-0,
         v1=1e-1,
     ),
@@ -86,7 +89,10 @@ config = dict(
         v0=4e-1,
         v1=1e-0,
     ),
-    replay__alpha=0.6,
+    replay=dict(
+        kind='simple',  # kind='priority',
+        alpha=0.6,  # not used in 'simple'
+    ),
 )
 
 # the device
@@ -121,9 +127,12 @@ with wandb.init(
     schema = dict(state=torch.float, action=torch.long, reward=torch.float,
                   state_next=torch.float, done=torch.bool, info=None)
 
-    # replay = SimpleBuffer(config['n_transitions'], config['n_batch_size'])
-    replay = PriorityBuffer(config['n_transitions'], config['n_batch_size'],
-                            alpha=config['replay__alpha'])
+    if config['replay']['kind'] == 'priority':
+        replay = PriorityBuffer(config['n_transitions'],
+                                config['n_batch_size'],
+                                alpha=config['replay']['alpha'])
+    else:
+        replay = SimpleBuffer(config['n_transitions'], config['n_batch_size'])
 
     # on-device storage for state
     state_ = torch.empty(1, *env.observation_space.shape,
@@ -135,10 +144,11 @@ with wandb.init(
         checkpoint = torch.load(os.path.join(path_ckpt, 'latest.pt'))
         q_net.load_state_dict(checkpoint['q_net'])
 
-        # rename and keep the backup
-        dttm = time.strftime('%Y%m%d-%H%M%S')
-        os.rename(os.path.join(path_ckpt, 'latest.pt'),
-                  os.path.join(path_ckpt, f'backup__{dttm}.pt'))
+        # rename and keep the backup, unless we do not train
+        if config['n_steps_total'] > 0:
+            dttm = time.strftime('%Y%m%d-%H%M%S')
+            os.rename(os.path.join(path_ckpt, 'latest.pt'),
+                      os.path.join(path_ckpt, f'backup__{dttm}.pt'))
 
     target_q_net = copy.deepcopy(q_net).to(device)
     update_target_model(src=q_net, dst=target_q_net)
@@ -152,6 +162,12 @@ with wandb.init(
     done, n_episodes, n_qnet_updates = True, 0, 0
     n_episode_start, f_episode_reward = 0, 0.
     n_checkpoint_countdown, n_freeze_countdown = 0, 0
+
+    # activation viewer
+    viewer = DummyConv2DViewer()
+    if render:
+        viewer = Conv2DViewer(q_net, activation=torch.relu, pixel=(5, 5))
+        viewer.toggle(False)
 
     # count burn-in as well
     n_total_steps = config['n_steps_total'] + config['n_transitions']
@@ -178,7 +194,7 @@ with wandb.init(
 
         # sample one step according to the current exploration policy
         f_step_start = time.monotonic()
-        with torch.no_grad():
+        with torch.no_grad(), viewer:
             state_.copy_(torch.from_numpy(state))  # copy_ also broadcasts
             action = int(
                 greedy(q_net(state_), epsilon=epsilon_).squeeze(0))
@@ -252,22 +268,26 @@ with wandb.init(
                 'q_net': q_net.state_dict(),
             }, os.path.join(path_ckpt, 'latest.pt'))
         n_checkpoint_countdown -= 1
+
+    viewer.close()
 # end with
 
 
 # infinite post training rollout
 @torch.no_grad()
-def rollout():
+def rollout(module, viewer=None):
     obs = env.reset()
     done, totrew, n_step = False, 0., 0
+
+    module.eval()
     while not done:
         if not env.render(mode='human'):
             return False
         time.sleep(0.01)
 
         state_[0].copy_(torch.from_numpy(obs))
-        # action = int(q_net(state_).max(dim=-1).indices[0])
-        action = int(greedy(q_net(state_), epsilon=0.01).squeeze(0))
+        with viewer:
+            action = int(greedy(module(state_).squeeze(0), epsilon=0.1))
         obs, reward, done, info = env.step(action)
 
         totrew += reward
@@ -279,6 +299,7 @@ def rollout():
     return True
 
 
+viewer = Conv2DViewer(q_net, activation=torch.relu, pixel=(5, 5))
 with env:
-    while render and rollout():
+    while rollout(q_net, viewer):
         pass
