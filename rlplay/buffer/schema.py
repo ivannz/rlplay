@@ -4,6 +4,26 @@ from collections import abc
 from itertools import zip_longest
 
 
+def schema(batch):
+    if isinstance(batch, abc.Sequence):  # (tuple, namedtuple, list, etc)
+        *data, = map(schema, batch)
+
+        # namedtuples, unlike tuples, use positional args on `__init__`
+        if isinstance(batch, tuple) and hasattr(batch, '_fields'):
+            return type(batch)(*data)
+
+        return type(batch)(data)
+
+    elif isinstance(batch, abc.Mapping):  # (dict, OrderedDict, etc)
+        # a `dict` schema is allowed to have missing keys
+        return type(batch)({k: schema(v) for k, v in batch.items()})
+
+    if isinstance(batch, torch.Tensor):
+        return batch.dtype
+
+    return type(batch)
+
+
 def ensure(batch, *, schema=None):
     """Ensure the specified device-dtype schema on a structured container.
 
