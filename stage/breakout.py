@@ -73,19 +73,20 @@ config = dict(
     seed=None,  # 897_458_056
     gamma=0.99,
     n_batch_size=32,
-    n_transitions=50_00+0,  # 500 is a really small replay buffer
-    n_steps_total=30_000_0+00,
+    n_transitions=50_0+00,  # 500 is a really small replay buffer
+    n_buffer_size=1_000_0+00,
+    n_steps_total=50_000_0+00,
     n_freeze_frequency=10_0+00,
     lr=2e-3,  # 25e-5,
     epsilon=dict(
         t0=0,
-        t1=1_000_00+0,  # t1=1_000_0+00,
+        t1=1_000_000,
         v0=1e-0,
         v1=1e-1,
     ),
     beta=dict(
         t0=0,
-        t1=5_000_0+00,
+        t1=25_000_0+00,
         v0=4e-1,
         v1=1e-0,
     ),
@@ -93,6 +94,9 @@ config = dict(
         kind='simple',  # kind='priority',
         alpha=0.6,  # not used in 'simple'
     ),
+    clip_grad_norm=1.0,
+    n_frame_stack=4,
+    n_frame_skip=4,
 )
 
 # the device
@@ -111,8 +115,8 @@ with wandb.init(
     # env = TerminateOnLostLive(env)  # messes up the randomness of ALE
     env = AtariObservation(env, shape=(84, 84))
     env = ToTensor(env)
-    env = FrameSkip(env, n_frames=4, kind='max')
-    env = ObservationQueue(env, n_size=4)
+    env = FrameSkip(env, n_frames=config['n_frame_skip'], kind='max')
+    env = ObservationQueue(env, n_size=config['n_frame_stack'])
 
     # wandb-friendly monitor
     if monitor_gym:
@@ -128,11 +132,11 @@ with wandb.init(
                   state_next=torch.float, done=torch.bool, info=None)
 
     if config['replay']['kind'] == 'priority':
-        replay = PriorityBuffer(config['n_transitions'],
+        replay = PriorityBuffer(config['n_buffer_size'],
                                 config['n_batch_size'],
                                 alpha=config['replay']['alpha'])
     else:
-        replay = SimpleBuffer(config['n_transitions'], config['n_batch_size'])
+        replay = SimpleBuffer(config['n_buffer_size'], config['n_batch_size'])
 
     # on-device storage for state
     state_ = torch.empty(1, *env.observation_space.shape,
@@ -239,14 +243,15 @@ with wandb.init(
                               weights=weight)
 
         # reassign priority
-        priority = abs(info['td_error']).cpu().squeeze_().add_(1e-6)
+        priority = abs(info['td_error']).cpu().squeeze(-1).numpy()
         for j, p in zip(batch['_index'], priority):
-            replay[j] = p
+            replay[j] = p + 1e-6
 
         # sgd step
         optim.zero_grad()
         loss.backward()
-        f_grad_norm = float(clip_grad_norm_(q_net.parameters(), max_norm=1.0))
+        f_grad_norm = float(clip_grad_norm_(q_net.parameters(),
+                                            max_norm=config['clip_grad_norm']))
         optim.step()
         n_qnet_updates += 1
 
