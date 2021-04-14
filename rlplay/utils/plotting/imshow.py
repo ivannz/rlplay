@@ -1,3 +1,5 @@
+import sys
+
 import pyglet
 import numpy as np
 
@@ -21,6 +23,11 @@ class ImageViewer(Window):
         self.set_location(self.screen.x + pos_x, self.screen.y + pos_y)
 
         # XXX maybe use FPSDisplay from `pyglet.window`
+
+    def close(self):
+        # avoid `Python is likely shutting down` ImportError raised by cocoa
+        if not sys.is_finalizing():
+            super().close()
 
     def on_close(self):
         super().on_close()
