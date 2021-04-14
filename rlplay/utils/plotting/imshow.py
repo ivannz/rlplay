@@ -24,7 +24,7 @@ class ImageViewer(Window):
 
     def on_close(self):
         super().on_close()
-        self.close()
+        self.close()  # super().__del__() also invokes this method
 
     @property
     def isopen(self):
