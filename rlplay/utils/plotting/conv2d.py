@@ -29,10 +29,18 @@ class Conv2DViewer(BaseModuleHook):
             activation = {}
 
         assert isinstance(activation, dict)
-        assert activation.keys() <= self.labels.keys()
         assert all(callable(act) for act in activation.values())
 
-        self.activation = activation
+        # ensure mod-keyed dict, in case of string keys in `activation` dict
+        mod_activation = {}
+        label_to_module = dict(zip(self.labels.values(), self.labels.keys()))
+        for mod, act in activation.items():
+            if not isinstance(mod, torch.nn.Module):
+                mod = label_to_module[mod]
+            mod_activation[mod] = act
+
+        assert mod_activation.keys() <= self.labels.keys()
+        self.activation = mod_activation
 
     def exit(self):
         super().exit()
@@ -47,7 +55,7 @@ class Conv2DViewer(BaseModuleHook):
         assert batch == 1 and len(spatial) == 2
 
         # apply the specified activation
-        activation = self.activation.get(label)
+        activation = self.activation.get(mod)
         if callable(activation):
             output = activation(output)
 
