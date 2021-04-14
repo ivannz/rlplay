@@ -11,8 +11,8 @@ from pyglet.window import Window, key
 class ImageViewer(Window):
     """My own version of the image viewer.
     """
-    def __init__(self):
-        super().__init__(resizable=True, vsync=False,
+    def __init__(self, caption=None):
+        super().__init__(caption=caption, resizable=True, vsync=False,
                          display=pyglet.canvas.get_display())
 
         # randomly displace the window
