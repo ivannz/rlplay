@@ -7,8 +7,9 @@ from ..module import BaseModuleHook
 
 
 class Conv2DViewer(BaseModuleHook):
-    def __init__(self, module, activation=None, *, normalize=True,
+    def __init__(self, module, activation=None, *, normalize='independent',
                  aspect=(16, 9), pixel=(1, 1)):
+        assert normalize in ('full', 'independent', 'none')
         super().__init__()
 
         self.feature_maps, self.normalize = {}, normalize
@@ -59,10 +60,26 @@ class Conv2DViewer(BaseModuleHook):
         if callable(activation):
             output = activation(output)
 
-        # flatten the channel and batch dims and make grid
+        # flatten the channel and batch dims and apply normalization
+        tensor = output.cpu().reshape(-1, *spatial)
+        if self.normalize != 'independent':
+            normalize = self.normalize == 'full'
+        else:
+            normalize = False
+
+            # flatten and 0-1 normalize each image independently
+            flat = tensor.flatten(1, -1).clone()
+            flat = flat.sub_(flat.min(dim=-1, keepdim=True).values)
+            upper = flat.max(dim=-1, keepdim=True).values
+            flat = flat.div_(upper.clamp_(min=1e-4))
+
+            # rebuild images
+            tensor = flat.reshape(-1, *spatial)
+
+        # make a grid of images with a checkerboard placeholder
         self.feature_maps[label] = make_grid(
-            output.cpu().reshape(-1, *spatial), aspect=self.aspect,
-            pixel=self.pixel, normalize=self.normalize).numpy()
+            tensor, aspect=self.aspect, pixel=self.pixel,
+            normalize=normalize).numpy()
 
     def __iter__(self):
         yield from self.feature_maps.items()
