@@ -8,7 +8,7 @@ from ..module import BaseModuleHook
 
 class Conv2DViewer(BaseModuleHook):
     def __init__(self, module, activation=None, *, normalize='independent',
-                 aspect=(16, 9), pixel=(1, 1)):
+                 tap=torch.nn.Conv2d, aspect=(16, 9), pixel=(1, 1)):
         assert normalize in ('full', 'independent', 'none')
         super().__init__()
 
@@ -17,7 +17,7 @@ class Conv2DViewer(BaseModuleHook):
 
         # immediately register self with the module
         for name, mod in module.named_modules():
-            if isinstance(mod, (torch.nn.Conv2d,)):
+            if isinstance(mod, tap):
                 self.register(name, mod)
 
         self.viewers = {}
