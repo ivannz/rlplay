@@ -7,7 +7,7 @@ from ..module import BaseModuleHook
 
 
 class Conv2DViewer(BaseModuleHook):
-    def __init__(self, module, *, normalize=True,
+    def __init__(self, module, activation=None, *, normalize=True,
                  aspect=(16, 9), pixel=(1, 1)):
         super().__init__()
 
@@ -21,6 +21,19 @@ class Conv2DViewer(BaseModuleHook):
 
         self.viewers = {}
 
+        # sort out the activations
+        if callable(activation):
+            activation = dict.fromkeys(self.labels, activation)
+
+        elif activation is None:
+            activation = {}
+
+        assert isinstance(activation, dict)
+        assert activation.keys() <= self.labels.keys()
+        assert all(callable(act) for act in activation.values())
+
+        self.activation = activation
+
     def exit(self):
         super().exit()
         self.feature_maps.clear()
@@ -32,6 +45,11 @@ class Conv2DViewer(BaseModuleHook):
         assert isinstance(output, torch.Tensor)
         batch, channels, *spatial = output.shape
         assert batch == 1 and len(spatial) == 2
+
+        # apply the specified activation
+        activation = self.activation.get(label)
+        if callable(activation):
+            output = activation(output)
 
         # flatten the channel and batch dims and make grid
         self.feature_maps[label] = make_grid(
