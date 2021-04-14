@@ -89,6 +89,11 @@ class Conv2DViewer(BaseModuleHook):
             # update the image data
             self.viewers[label].imshow((image * 255).astype(np.uint8))
 
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Draw on exit."""
+        super().__exit__(exc_type, exc_value, traceback)
+        self.draw()
+
 
 if __name__ == '__main__':
     pass
