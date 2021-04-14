@@ -4,7 +4,7 @@ from .schema import schema
 class BaseModuleHook:
     """Base class for module-level hooks."""
     def __init__(self):
-        self.hooks, self.n_inputs, self.n_inputs, self.labels = {}, {}, {}, {}
+        self.hooks, self.n_inputs, self.n_outputs, self.labels = {}, {}, {}, {}
 
     def register(self, label, module):
         assert module not in self.hooks
