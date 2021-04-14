@@ -312,5 +312,5 @@ def rollout(module, viewer=None):
 
 viewer = clsViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
 with env:
-    while rollout(q_net, viewer):
+    while render and rollout(q_net, viewer):
         pass
