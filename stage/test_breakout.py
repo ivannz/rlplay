@@ -28,7 +28,8 @@ print(repr(q_net))
 
 checkpoint = os.path.join(path_ckpt, 'latest.pt')
 if os.path.isfile(checkpoint):
-    q_net.load_state_dict(torch.load(checkpoint)['q_net'])
+    ckpt = torch.load(checkpoint, map_location=torch.device('cpu'))
+    q_net.load_state_dict(ckpt['q_net'])
 
 state_ = torch.empty(1, *env.observation_space.shape,
                      dtype=torch.float32, device=device)
@@ -37,11 +38,10 @@ state_ = torch.empty(1, *env.observation_space.shape,
 # infinite post training rollout
 @torch.no_grad()
 def rollout(module, viewer=None):
-    env.seed(42)
+    module.eval()
+
     obs = env.reset()
     done, totrew, n_step = False, 0., 0
-
-    module.eval()
     while not done:
         if not env.render(mode='human'):
             return False
@@ -64,7 +64,7 @@ def rollout(module, viewer=None):
     return True
 
 
-viewer = Conv2DViewer(q_net, activation=torch.relu, pixel=(5, 5))
+viewer = Conv2DViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
 with env:
     while rollout(q_net, viewer):
         pass

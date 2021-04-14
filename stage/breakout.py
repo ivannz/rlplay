@@ -68,6 +68,8 @@ os.makedirs(root, exist_ok=True)
 path_ckpt = os.path.join(root, 'checkpoints')
 os.makedirs(path_ckpt, exist_ok=True)
 
+latest_ckpt = os.path.join(path_ckpt, 'latest.pt')
+
 # hyperparamters
 config = dict(
     seed=None,  # 897_458_056
@@ -101,6 +103,7 @@ config = dict(
 
 # the device
 device = torch.device('cpu')
+clsViewer = Conv2DViewer if render else DummyConv2DViewer
 
 # wandb is gud frmaewrk u shud uze plaeaze
 with wandb.init(
@@ -144,14 +147,14 @@ with wandb.init(
 
     # q_net, target_q_net
     q_net = BreakoutQNet(env.action_space.n).to(device)
-    if os.path.isfile(os.path.join(path_ckpt, 'latest.pt')):
-        checkpoint = torch.load(os.path.join(path_ckpt, 'latest.pt'))
+    if os.path.isfile(latest_ckpt):
+        checkpoint = torch.load(latest_ckpt, map_location=torch.device('cpu'))
         q_net.load_state_dict(checkpoint['q_net'])
 
-        # rename and keep the backup, unless we do not train
+        # rename the latest and keep the backup, unless we do not train
         if config['n_steps_total'] > 0:
             dttm = time.strftime('%Y%m%d-%H%M%S')
-            os.rename(os.path.join(path_ckpt, 'latest.pt'),
+            os.rename(latest_ckpt,
                       os.path.join(path_ckpt, f'backup__{dttm}.pt'))
 
     target_q_net = copy.deepcopy(q_net).to(device)
@@ -167,18 +170,15 @@ with wandb.init(
     n_episode_start, f_episode_reward = 0, 0.
     n_checkpoint_countdown, n_freeze_countdown = 0, 0
 
-    # activation viewer
-    viewer = DummyConv2DViewer()
-    if render:
-        viewer = Conv2DViewer(q_net, activation=torch.relu, pixel=(5, 5))
-        viewer.toggle(False)
-
-    q_net.train()
-    target_q_net.eval()  # the target has dropout and batch norms deactivated
+    # intermediate output viewer: use custom identity taps, instead of Conv2d
+    viewer = clsViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
+    viewer.toggle(False)  # deactive by default
 
     # count burn-in as well
     n_total_steps = config['n_steps_total'] + config['n_transitions']
     for n_step in tqdm.tqdm(range(n_total_steps)):
+        q_net.eval()
+
         # handle episodic interaction
         if done:
             # log end of episode
@@ -229,6 +229,9 @@ with wandb.init(
             continue
 
         # train for one batch only if the buffer has enough data.
+        q_net.train()
+        target_q_net.eval()  # deactivate dropout and batch norms in the target
+
         batch = next(iter(replay))
         batch = to_device(ensure(batch, schema=schema), device=device)
 
@@ -274,7 +277,7 @@ with wandb.init(
             n_checkpoint_countdown = n_checkpoint_frequency
             torch.save({
                 'q_net': q_net.state_dict(),
-            }, os.path.join(path_ckpt, 'latest.pt'))
+            }, latest_ckpt)
         n_checkpoint_countdown -= 1
 
     viewer.close()
@@ -307,7 +310,7 @@ def rollout(module, viewer=None):
     return True
 
 
-viewer = Conv2DViewer(q_net, activation=torch.relu, pixel=(5, 5))
+viewer = clsViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
 with env:
     while rollout(q_net, viewer):
         pass
