@@ -29,7 +29,7 @@ class BaseModuleHook:
         self._validate(module, inputs, output)
         self.on_forward(self.labels[module], module, inputs, output)
 
-    def clear(self):
+    def exit(self):
         for hook in self.hooks.values():
             hook.remove()
         self.hooks.clear()
@@ -41,7 +41,7 @@ class BaseModuleHook:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.clear()
+        self.exit()
 
     def on_forward(self, label, mod, inputs, output):
         raise NotImplementedError

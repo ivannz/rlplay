@@ -21,11 +21,10 @@ class Conv2DViewer(BaseModuleHook):
 
         self.viewers = {}
 
-    def clear(self):
-        if self.isopen:
-            self.close()
+    def exit(self):
+        super().exit()
         self.feature_maps.clear()
-        super().clear()
+        self.close()
 
     @torch.no_grad()
     def on_forward(self, label, mod, inputs, output):
@@ -42,26 +41,27 @@ class Conv2DViewer(BaseModuleHook):
     def __iter__(self):
         yield from self.feature_maps.items()
 
-    def close(self):
-        self.viewers.clear()
-
     @property
     def isopen(self):
+        """Check if any viewers are open."""
         return any(v.isopen for v in self.viewers.values())
 
+    def close(self):
+        """Close all viewers."""
+        for viewer in self.viewers.values():
+            viewer.close()
+        self.viewers.clear()
+
     def draw(self):
+        """Draw the most recently collected outputs."""
         # create as many Viewers are there are convolutional layers
         for label, image in self:
             if label not in self.viewers:
-                viewer = ImageViewer(caption=f'Feature maps of `{label}`')
-                viewer.imshow((image * 255).astype(np.uint8))
-                self.viewers[label] = viewer
+                self.viewers[label] = ImageViewer(
+                    caption=f'Feature maps of `{label}`')
 
-        self.render()
-
-    def render(self):
-        for label, viewer in self.viewers.items():
-            viewer.render()
+            # update the image data
+            self.viewers[label].imshow((image * 255).astype(np.uint8))
 
 
 if __name__ == '__main__':
