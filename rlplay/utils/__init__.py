@@ -6,4 +6,6 @@ from .wrappers import ObservationQueue, FrameSkip
 from .module import BaseModuleHook
 from .schema import ensure, to_device
 
-# from .imshow import ImageViewer  # not exported due to heavy dependencies
+from .runtime import get_class, get_instance
+
+# from . import plotting  # not exported due to heavy dependencies
