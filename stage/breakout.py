@@ -18,6 +18,8 @@ from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
 from rlplay.zoo.breakout import BreakoutQNet
 
+from rlplay.utils import get_instance  # yep, this one, again -_-
+
 from rlplay.utils.plotting import Conv2DViewer, DummyConv2DViewer
 
 from functools import partial
@@ -76,7 +78,6 @@ config = dict(
     gamma=0.99,
     n_batch_size=32,
     n_transitions=50_0+00,  # 500 is a really small replay buffer
-    n_buffer_size=1_000_000,
     n_batches_per_update=1,
     n_steps_total=50_000_0+00,
     n_freeze_frequency=10_0+00,
@@ -94,9 +95,14 @@ config = dict(
         v0=4e-1,
         v1=1e-0,
     ),
+    # replay=dict(
+    #     cls="<class 'rlplay.buffer.simple.SimpleBuffer'>",
+    #     capacity=1_000_000,
+    # ),
     replay=dict(
-        kind='simple',  # kind='priority',
-        alpha=0.6,  # not used in 'simple'
+        cls="<class 'rlplay.buffer.priority.PriorityBuffer'>",
+        capacity=1_000_000,
+        alpha=0.6,
     ),
     clip_grad_norm=1.0,
     observation_shape=(84, 84),
@@ -137,12 +143,9 @@ with wandb.init(
     schema = dict(state=torch.float, action=torch.long, reward=torch.float,
                   state_next=torch.float, done=torch.bool, info=None)
 
-    if config['replay']['kind'] == 'priority':
-        replay = PriorityBuffer(config['n_buffer_size'],
-                                config['n_batch_size'],
-                                alpha=config['replay']['alpha'])
-    else:
-        replay = SimpleBuffer(config['n_buffer_size'], config['n_batch_size'])
+    # create a dedicated generator for experience buffers
+    g_cpu = torch.Generator(torch.device('cpu'))
+    replay = get_instance(**config['replay'], generator=g_cpu)
 
     # on-device storage for state
     state_ = torch.empty(1, *env.observation_space.shape,
@@ -236,7 +239,8 @@ with wandb.init(
         target_q_net.eval()  # deactivate dropout and batch norms in the target
 
         losses = []
-        for batch, _ in zip(replay, range(config['n_batches_per_update'])):
+        for _ in range(config['n_batches_per_update']):
+            batch = replay.draw(config['n_batch_size'], replacement=True)
             batch = to_device(ensure(batch, schema=schema), device=device)
 
             # beta scheduling for loss weights (related to prioritized replay)
@@ -257,8 +261,8 @@ with wandb.init(
             optim.step()
 
             # reassign priority (related to prioritized replay)
-            priority = abs(info['td_error']).cpu().squeeze(-1).numpy()
-            for j, p in zip(batch['_index'], priority):
+            priority = abs(info['td_error']).cpu().squeeze(-1)
+            for j, p in zip(batch['_index'].tolist(), priority.tolist()):
                 replay[j] = p + 1e-6
 
             losses.append((
