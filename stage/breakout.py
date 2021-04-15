@@ -16,7 +16,7 @@ from rlplay.utils import to_device, ensure
 
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
-from rlplay.zoo.toy import BreakoutQNet
+from rlplay.zoo.breakout import BreakoutQNet
 
 from rlplay.utils.plotting import Conv2DViewer, DummyConv2DViewer
 
@@ -82,7 +82,7 @@ config = dict(
     lr=2e-3,  # 25e-5,
     epsilon=dict(
         t0=0,
-        t1=1_000_000,
+        t1=1_000_00+0,
         v0=1e-0,
         v1=1e-1,
     ),
