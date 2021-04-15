@@ -99,6 +99,7 @@ config = dict(
     clip_grad_norm=1.0,
     n_frame_stack=4,
     n_frame_skip=4,
+    double=True,
 )
 
 # the device
@@ -243,7 +244,7 @@ with wandb.init(
 
         loss, info = dqn.loss(batch, gamma=config['gamma'],
                               module=q_net, target=target_q_net,
-                              weights=weight)
+                              double=config['double'], weights=weight)
 
         # reassign priority
         priority = abs(info['td_error']).cpu().squeeze(-1).numpy()
