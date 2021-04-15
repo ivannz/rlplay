@@ -12,14 +12,15 @@ class Conv2DViewer(BaseModuleHook):
         assert normalize in ('full', 'independent', 'none')
         super().__init__()
 
-        self.feature_maps, self.normalize = {}, normalize
+        self.feature_maps, self.viewers = {}, {}
         self.aspect, self.pixel = aspect, pixel
+        self.normalize = normalize
 
         # immediately register self with the module
         if not isinstance(tap, tuple):
             tap = tap,
 
-        *types, = map(type, tap)
+        *types, = map(lambda T: T if isinstance(T, type) else type(T), tap)
         if all(issubclass(t, torch.nn.Module) for t in types):
             # filter by layer class
             for name, mod in module.named_modules():
@@ -35,8 +36,6 @@ class Conv2DViewer(BaseModuleHook):
         else:
             raise TypeError('`tap` tuple must be either all prefix strings'
                             f' or all `Module` subclasses. Got `{types}`.')
-
-        self.viewers = {}
 
         # sort out the activations
         if callable(activation):
@@ -129,4 +128,29 @@ class Conv2DViewer(BaseModuleHook):
 
 
 if __name__ == '__main__':
-    pass
+    from collections import OrderedDict
+
+    module = torch.nn.Sequential(OrderedDict([
+        ('block_1', torch.nn.Sequential(OrderedDict([
+            ('conv_1', torch.nn.Conv2d(32, 64, 5, 2)),
+            ('relu_1', torch.nn.ReLU()),
+        ]))),
+        ('conv_2', torch.nn.Conv2d(64, 128, 3, 1)),
+        ('relu_2', torch.nn.ReLU()),
+    ]))
+
+    print('Tapping layers with names strating with `conv_` or `block_`')
+    viewer = Conv2DViewer(module, tap=('conv_', 'block_'))
+    while True:
+        with viewer:
+            module(torch.randn(1, 32, 28, 28))
+        if not viewer.isopen:
+            break
+
+    print('Tapping layers of type `torch.nn.Conv2d`')
+    viewer = Conv2DViewer(module, tap=torch.nn.Conv2d)
+    while True:
+        with viewer:
+            module(torch.randn(1, 32, 28, 28))
+        if not viewer.isopen:
+            break
