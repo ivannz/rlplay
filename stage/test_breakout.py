@@ -12,7 +12,7 @@ from rlplay.utils import greedy
 from rlplay.utils.plotting import Conv2DViewer
 
 
-path_ckpt = os.path.join(os.path.abspath('./runs'), 'checkpoints')
+path_ckpt = os.path.join(os.path.abspath('./runs'), 'ckpt')
 device = torch.device('cpu')
 
 # an instance of atari Breakout-v4

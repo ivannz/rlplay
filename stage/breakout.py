@@ -65,7 +65,7 @@ monitor_gym = False
 root = os.path.abspath('./runs')
 os.makedirs(root, exist_ok=True)
 
-path_ckpt = os.path.join(root, 'checkpoints')
+path_ckpt = os.path.join(root, 'ckpt')
 os.makedirs(path_ckpt, exist_ok=True)
 
 latest_ckpt = os.path.join(path_ckpt, 'latest.pt')
