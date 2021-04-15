@@ -54,8 +54,8 @@ def update_target_model(*, src, dst):
 
 # wandb mode
 wandb_mode = 'online'  # 'disabled'
+tags = ['d-dqn', 'test', 'breakout']
 
-n_checkpoint_frequency = 250
 render = True
 # `monitor_gym` makes wnadb patch gym's ImageRecorder with a `wandb.log({})`,
 #  without `commit=False`, which messes with the logging in the main loop.
@@ -76,9 +76,11 @@ config = dict(
     gamma=0.99,
     n_batch_size=32,
     n_transitions=50_0+00,  # 500 is a really small replay buffer
-    n_buffer_size=1_000_0+00,
+    n_buffer_size=1_000_000,
+    n_batches_per_update=1,
     n_steps_total=50_000_0+00,
     n_freeze_frequency=10_0+00,
+    n_checkpoint_frequency=250,
     lr=2e-3,  # 25e-5,
     epsilon=dict(
         t0=0,
@@ -97,6 +99,7 @@ config = dict(
         alpha=0.6,  # not used in 'simple'
     ),
     clip_grad_norm=1.0,
+    observation_shape=(84, 84),
     n_frame_stack=4,
     n_frame_skip=4,
     double=True,
@@ -108,8 +111,7 @@ clsViewer = Conv2DViewer if render else DummyConv2DViewer
 
 # wandb is gud frmaewrk u shud uze plaeaze
 with wandb.init(
-         tags=['d-dqn', 'test', 'breakout'],
-         config=config, monitor_gym=monitor_gym,
+         tags=tags, config=config, monitor_gym=monitor_gym,
          mode=wandb_mode, dir=root) as experiment:
 
     config = experiment.config
@@ -117,7 +119,7 @@ with wandb.init(
     # an instance of atari Breakout-v4
     env = gym.make('BreakoutNoFrameskip-v4')
     # env = TerminateOnLostLive(env)  # messes up the randomness of ALE
-    env = AtariObservation(env, shape=(84, 84))
+    env = AtariObservation(env, shape=config['observation_shape'])
     env = ToTensor(env)
     env = FrameSkip(env, n_frames=config['n_frame_skip'], kind='max')
     env = ObservationQueue(env, n_size=config['n_frame_stack'])
@@ -173,9 +175,9 @@ with wandb.init(
 
     # intermediate output viewer: use custom identity taps, instead of Conv2d
     viewer = clsViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
-    viewer.toggle(False)  # deactive by default
+    viewer.toggle(False)  # inactive by default: won't collect intermediates
 
-    # count burn-in as well
+    # count the burn-in as well
     n_total_steps = config['n_steps_total'] + config['n_transitions']
     for n_step in tqdm.tqdm(range(n_total_steps)):
         q_net.eval()
@@ -233,30 +235,38 @@ with wandb.init(
         q_net.train()
         target_q_net.eval()  # deactivate dropout and batch norms in the target
 
-        batch = next(iter(replay))
-        batch = to_device(ensure(batch, schema=schema), device=device)
+        losses = []
+        for batch, _ in zip(replay, range(config['n_batches_per_update'])):
+            batch = to_device(ensure(batch, schema=schema), device=device)
 
-        # beta scheduling for loss weights
-        weight = batch.get('_weight')
-        if weight is not None:
-            beta = beta_schedule(n_qnet_updates)
-            weight = weight.to(state_).pow_(beta)
+            # beta scheduling for loss weights (related to prioritized replay)
+            weight = batch.get('_weight')
+            if weight is not None:
+                beta = beta_schedule(n_qnet_updates)
+                weight = weight.to(state_).pow_(beta)
 
-        loss, info = dqn.loss(batch, gamma=config['gamma'],
-                              module=q_net, target=target_q_net,
-                              double=config['double'], weights=weight)
+            loss, info = dqn.loss(batch, gamma=config['gamma'],
+                                  module=q_net, target=target_q_net,
+                                  double=config['double'], weights=weight)
 
-        # reassign priority
-        priority = abs(info['td_error']).cpu().squeeze(-1).numpy()
-        for j, p in zip(batch['_index'], priority):
-            replay[j] = p + 1e-6
+            # sgd step
+            optim.zero_grad()
+            loss.backward()
+            f_grad_norm = clip_grad_norm_(q_net.parameters(),
+                                          max_norm=config['clip_grad_norm'])
+            optim.step()
 
-        # sgd step
-        optim.zero_grad()
-        loss.backward()
-        f_grad_norm = float(clip_grad_norm_(q_net.parameters(),
-                                            max_norm=config['clip_grad_norm']))
-        optim.step()
+            # reassign priority (related to prioritized replay)
+            priority = abs(info['td_error']).cpu().squeeze(-1).numpy()
+            for j, p in zip(batch['_index'], priority):
+                replay[j] = p + 1e-6
+
+            losses.append((
+                float(loss),
+                float(abs(info['td_error']).mean()),
+                float(f_grad_norm),
+            ))
+
         n_qnet_updates += 1
 
         # freeze the target q-net every once in a while (number of sgd updates)
@@ -266,19 +276,20 @@ with wandb.init(
         n_freeze_countdown -= 1
 
         # record metrics
+        loss, td_error, f_grad_norm = zip(*losses)
         experiment.log({
-            'loss': float(loss),
-            'td_error': float(abs(info['td_error']).mean()),
+            'loss': loss[-1],
+            'td_error': td_error[-1],
             'n_qnet_updates': n_qnet_updates,
-            'f_grad_norm': f_grad_norm,
+            'f_grad_norm': f_grad_norm[-1],
         }, step=n_step, commit=False)
 
         # from time to time save the current Q-net
         if n_checkpoint_countdown <= 0:
-            n_checkpoint_countdown = n_checkpoint_frequency
             torch.save({
                 'q_net': q_net.state_dict(),
             }, latest_ckpt)
+            n_checkpoint_countdown = config['n_checkpoint_frequency']
         n_checkpoint_countdown -= 1
 
     viewer.close()
