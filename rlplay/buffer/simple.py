@@ -37,23 +37,28 @@ class SimpleBuffer:
         # item attribute assignment is ingored by simple buffers
         pass
 
-    def draw(self, batch_size):
-        """Draw a random batch from the buffer WITH replacement."""
+    def sample_indices(self, batch_size, replacement):
+        """Draw random indices into the current buffer."""
+        if replacement:
+            return torch.randint(len(self), generator=self.generator_,
+                                 size=(batch_size,))
+
         # `.randperm` is slow for very large buffer, especially if only
         #  one batch is requested.
-        batch = torch.randint(len(self), size=batch_size,
-                              generator=self.generator_)
+        permutation = torch.randperm(len(self), generator=self.generator_)
+        return permutation[:batch_size]
+
+    def draw(self, batch_size, replacement=True):
+        """Draw a random batch from the buffer WITH replacement."""
+        batch = self.sample_indices(batch_size, replacement)
         return self.collate(batch.tolist())  # for-looping over a list fast
 
-    def sample(self, batch_size):
+    def sample(self, batch_size, replacement=False):
         """Iterate over the buffer in batches drawn WITHOUT replacement."""
-        n_batches = (len(self) + batch_size - 1) // batch_size
-
-        permutation = torch.randperm(len(self), generator=self.generator_)
-        # permutation[j::n_batches] is `statistically` the same permutation
-        for j in range(n_batches):
+        sample = self.sample_indices(len(self), replacement)
+        for j in range(0, len(self), batch_size):
             # XXX `torch_collate` on the whole buffer gives no speed up
-            yield self.collate(permutation[j::n_batches].tolist())
+            yield self.collate(sample[j:j + batch_size].tolist())
 
     def collate(self, indices):
         # use torch's versatile, but slow-ish default collate function

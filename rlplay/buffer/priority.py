@@ -123,16 +123,19 @@ class PriorityBuffer:
         self.default = max(self.default, value)
         _update(min, self._prio, index, value ** self.alpha)
 
+    def sample_indices(self, batch_size, replacement):
+        """Draw random indices into the current buffer."""
+        return self.priority.multinomial(batch_size, replacement=replacement,
+                                         generator=self.generator_)
+
     def draw(self, batch_size, replacement=True):
         """Draw a random batch from the buffer WITH replacement."""
-        batch = self.priority.multinomial(batch_size, replacement=replacement,
-                                          generator=self.generator_)
+        batch = self.sample_indices(batch_size, replacement)
         return self.collate(batch.tolist())
 
     def sample(self, batch_size, replacement=False):
         """Iterate over the buffer in batches respecting priority."""
-        sample = self.priority.multinomial(batch_size, replacement=replacement,
-                                           generator=self.generator_)
+        sample = self.sample_indices(len(self), replacement)
         for j in range(0, len(self), batch_size):
             yield self.collate(sample[j:j + batch_size].tolist())
 
