@@ -12,7 +12,9 @@ def loss(batch, *, module, target, gamma=0.95, double=True, weights=None):
     The DQN-target is given by $
         r_t + \gamma \max_a Q(s_{t+1}, a; \theta^-)
     $ where $\theta^-$ are frozen parameters of the Q-network (`target`).
-    Now, the D-DQN algorithm unravels the $\max$ operator as $
+    Now, the D-DQN algorithm of
+        [van Hasselt et al. (2015)](https://arxiv.org/abs/1509.06461)
+    unravels the $\max$ operator as $
         \max_k v_k
             \equiv v_{\arg \max_k v_k}
     $ and replaces the outer $v$ with the Q-values of the target net, while
@@ -52,7 +54,7 @@ def loss(batch, *, module, target, gamma=0.95, double=True, weights=None):
 
         else:
             # get \max_a Q(s_{t+1}, a; \theta^-)
-            q_value = q_target.max(dim=-1).values
+            q_value = q_target.max(dim=-1, keepdim=True).values
 
         # mask terminal states and get $r_t + \gamma \hat{q}_t 1_{T_t}$
         q_value.masked_fill_(batch['done'].unsqueeze(-1), 0.)
