@@ -2,6 +2,8 @@ import torch
 
 from torch.utils.data.dataloader import default_collate as torch_collate
 
+from .base import BaseRingBuffer
+
 
 def _update(op, tree, at, value):
     r"""Update the binary tree up from a changed value at the leaf.
@@ -65,7 +67,7 @@ def _value(tree, at):
     return tree[size + at]
 
 
-class PriorityBuffer:
+class PriorityBuffer(BaseRingBuffer):
     r"""A prioritized slow ring buffer with no schema.
 
     Details
@@ -78,10 +80,7 @@ class PriorityBuffer:
     of the rarest item.
     """
     def __init__(self, capacity, *, generator=None, alpha=1.):
-        self.generator_ = generator or torch.default_generator
-        assert isinstance(self.generator_, torch.Generator)
-
-        self.buffer, self.capacity, self.position = [], capacity, 0
+        super().__init__(capacity=capacity, generator=generator)
 
         self.default, self.alpha = 1., alpha
         self._prio = torch.full((2 * capacity,), self.default, dtype=float)
@@ -95,27 +94,10 @@ class PriorityBuffer:
     def min(self):
         return self._prio[1]
 
-    def __len__(self):
-        """The used capacity of the buffer."""
-        return len(self.buffer)
-
-    def __iter__(self):
-        """iterate over the content."""
-        return iter(self.buffer)
-
-    def __getitem__(self, index):
-        """Get the item at a particular index in the buffer."""
-        return self.buffer[index]
-
     def commit(self, _index=None, _weight=None, **kwdata):
         """Put key-value data into the buffer, evicting the oldest record if full."""
         _update(min, self._prio, self.position, self.default ** self.alpha)
-        if len(self.buffer) < self.capacity:
-            self.buffer.append(kwdata)  # grow buffer
-
-        else:
-            self.buffer[self.position] = kwdata
-        self.position = (1 + self.position) % self.capacity
+        super().commit(**kwdata)
 
     def __setitem__(self, index, value):
         """Set the priority of an index in the buffer."""
@@ -127,17 +109,6 @@ class PriorityBuffer:
         """Draw random indices into the current buffer."""
         return self.priority.multinomial(batch_size, replacement=replacement,
                                          generator=self.generator_)
-
-    def draw(self, batch_size, replacement=True):
-        """Draw a random batch from the buffer WITH replacement."""
-        batch = self.sample_indices(batch_size, replacement)
-        return self.collate(batch.tolist())
-
-    def sample(self, batch_size, replacement=False):
-        """Iterate over the buffer in batches respecting priority."""
-        sample = self.sample_indices(len(self), replacement)
-        for j in range(0, len(self), batch_size):
-            yield self.collate(sample[j:j + batch_size].tolist())
 
     def collate(self, indices):
         # Importance weights are $\omega_j = \frac{\pi_j}{\beta_j}$, for
