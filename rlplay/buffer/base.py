@@ -1,4 +1,5 @@
 import torch
+from numpy import _NoValue  # numpy's guard singleton
 
 
 class BaseRingBuffer:

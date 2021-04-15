@@ -2,7 +2,7 @@ import torch
 
 from torch.utils.data.dataloader import default_collate as torch_collate
 
-from .base import BaseRingBuffer
+from .base import BaseRingBuffer, _NoValue
 
 
 def _update(op, tree, at, value):
@@ -13,9 +13,9 @@ def _update(op, tree, at, value):
     We assume a binary `tree` with $m$ leaves and $
         l := \lfloor \log_2 m \rfloor
     $ levels. The leaves are assigned arbitrary values. The value of each inner
-    node, however, is equal to the sum of its left and right child. Hence, at
-    an inner level $k$ each node $j = 0, \cdots, 2^k-1$ represents a the sum of
-    the slice $
+    node, however, is equal to the sum (`op`) of its left and right child.
+    Hence, at an inner level $k$ each node $j = 0, \cdots, 2^k-1$ represents
+    the op-aggregate of the slice $
         [j 2^{l-k}, (j + 1) 2^{l-k})
     $ of the leaves, which reside at level $l$.
     """
@@ -94,7 +94,7 @@ class PriorityBuffer(BaseRingBuffer):
     def min(self):
         return self._prio[1]
 
-    def commit(self, _index=None, _weight=None, **kwdata):
+    def commit(self, *, _index=_NoValue, _weight=_NoValue, **kwdata):
         """Put key-value data into the buffer, evicting the oldest record if full."""
         _update(min, self._prio, self.position, self.default ** self.alpha)
         super().commit(**kwdata)

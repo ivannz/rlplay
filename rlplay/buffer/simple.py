@@ -2,13 +2,14 @@ import torch
 
 from torch.utils.data.dataloader import default_collate as torch_collate
 
-from .base import BaseRingBuffer
+from .base import BaseRingBuffer, _NoValue
 
 
 class SimpleBuffer(BaseRingBuffer):
     """A simple slow ring buffer with no schema which mimics a dataloader."""
-    def commit(self, _index=None, **kwdata):
+    def commit(self, *, _index=_NoValue, **kwdata):
         """Put key-value data into the buffer, evicting the oldest record if full."""
+        assert _index is _NoValue
         super().commit(**kwdata)
 
     def sample_indices(self, batch_size, replacement):
