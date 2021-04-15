@@ -22,8 +22,11 @@ class SimpleBuffer:
 
     def __len__(self):
         """The used capacity of the buffer."""
-        # XXX together with `__iter__`, this confuses tqdm.
         return len(self.buffer)
+
+    def __iter__(self):
+        """iterate over the content."""
+        return iter(self.buffer)
 
     def __getitem__(self, index):
         """Get the item at a particular index in the buffer."""
