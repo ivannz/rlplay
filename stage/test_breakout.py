@@ -5,7 +5,7 @@ import torch
 
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
-from rlplay.zoo.toy import BreakoutQNet
+from rlplay.zoo.breakout import BreakoutQNet
 
 from rlplay.utils import greedy
 
