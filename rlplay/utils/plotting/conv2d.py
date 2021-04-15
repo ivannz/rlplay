@@ -16,9 +16,25 @@ class Conv2DViewer(BaseModuleHook):
         self.aspect, self.pixel = aspect, pixel
 
         # immediately register self with the module
-        for name, mod in module.named_modules():
-            if isinstance(mod, tap):
-                self.register(name, mod)
+        if not isinstance(tap, tuple):
+            tap = tap,
+
+        *types, = map(type, tap)
+        if all(issubclass(t, torch.nn.Module) for t in types):
+            # filter by layer class
+            for name, mod in module.named_modules():
+                if isinstance(mod, tap):
+                    self.register(name, mod)
+
+        elif all(issubclass(t, str) for t in types):
+            # use string identifiers: match prefix
+            for name, mod in module.named_modules():
+                if name.startswith(tap):
+                    self.register(name, mod)
+
+        else:
+            raise TypeError('`tap` tuple must be either all prefix strings'
+                            f' or all `Module` subclasses. Got `{types}`.')
 
         self.viewers = {}
 
