@@ -1,4 +1,5 @@
 from .common import linear, greedy
+from .common import backupifexists
 
 from .wrappers import ToTensor, ChannelFirst, AtariObservation
 from .wrappers import ObservationQueue, FrameSkip
