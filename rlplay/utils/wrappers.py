@@ -1,4 +1,5 @@
 import numpy as np
+from random import Random
 
 from gym import ObservationWrapper, Wrapper
 from gym.spaces import Box
@@ -115,3 +116,42 @@ class FrameSkip(Wrapper):
         # aggregate appropriately
         obs = self.op(obs[-self.n_pool:])
         return obs, sum(reward), any(done), info
+
+
+class TerminateOnLostLive(Wrapper):
+    @property
+    def ale(self):
+        return self.env.unwrapped.ale
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+
+        # detect loss-of-life
+        current = self.ale.lives()
+        done = done or current < self.lives
+        self.lives = current
+
+        return obs, reward, done, info
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+        self.lives = self.ale.lives()
+        return obs
+
+
+class RandomNullopsOnReset(Wrapper):
+    def __init__(self, env, *, max_nullops=30, nullop=0, random=None):
+        random = random or Random()
+        assert isinstance(random, Random)
+
+        super().__init__(env)
+        self.max_nullops, self.nullop = max_nullops, nullop
+        self.random_ = random
+
+    def reset(self, **kwargs):
+        obs = self.env.reset(**kwargs)
+
+        for j in range(self.random_.randint(0, self.max_nullops)):
+            obs, *ignore = self.env.step(self.nullop)
+
+        return obs

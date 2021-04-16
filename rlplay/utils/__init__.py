@@ -3,6 +3,7 @@ from .common import backupifexists
 
 from .wrappers import ToTensor, ChannelFirst, AtariObservation
 from .wrappers import ObservationQueue, FrameSkip
+from .wrappers import TerminateOnLostLive, RandomNullopsOnReset
 
 from .module import BaseModuleHook
 from .schema import ensure, to_device
