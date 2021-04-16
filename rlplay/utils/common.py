@@ -22,7 +22,7 @@ def greedy(q_value, *, epsilon=0.5):
 
 def backupifexists(filename, prefix='backup'):
     if not os.path.isfile(filename):
-        return filename
+        return None
 
     head, tail = os.path.split(filename)
     dttm = time.strftime('%Y%m%d-%H%M%S')
