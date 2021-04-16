@@ -26,6 +26,8 @@ def backupifexists(filename, prefix='backup'):
 
     head, tail = os.path.split(filename)
     dttm = time.strftime('%Y%m%d-%H%M%S')
-    os.rename(filename, os.path.join(head, f'{prefix}__{dttm}__{tail}'))
 
-    return filename
+    backup = os.path.join(head, f'{prefix}__{dttm}__{tail}')
+    os.rename(filename, backup)
+
+    return backup
