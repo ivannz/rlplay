@@ -17,6 +17,7 @@ from rlplay.utils import to_device, ensure
 
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
+from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLive
 from rlplay.zoo.breakout import BreakoutQNet
 
 from rlplay.utils import get_instance  # yep, this one, again -_-
@@ -27,27 +28,6 @@ from functools import partial
 from tempfile import mkdtemp
 
 from gym.wrappers import Monitor
-
-
-class TerminateOnLostLive(gym.Wrapper):
-    @property
-    def ale(self):
-        return self.env.unwrapped.ale
-
-    def step(self, action):
-        obs, reward, done, info = self.env.step(action)
-
-        # detect loss-of-life
-        current = self.ale.lives()
-        done = done or current < self.lives
-        self.lives = current
-
-        return obs, reward, done, info
-
-    def reset(self, **kwargs):
-        obs = super().reset(**kwargs)
-        self.lives = self.ale.lives()
-        return obs
 
 
 @torch.no_grad()
@@ -109,7 +89,10 @@ config = dict(
     observation_shape=(84, 84),
     n_frame_stack=4,
     n_frame_skip=4,
+    n_update_frequency=1,
     double=True,
+    max_nullops=30,  # it appears that noops affect the randomness of ALE
+    terminate_on_loss_of_life=False,
 )
 
 # the device
@@ -125,7 +108,9 @@ with wandb.init(
 
     # an instance of atari Breakout-v4
     env = gym.make('BreakoutNoFrameskip-v4')
-    # env = TerminateOnLostLive(env)  # messes up the randomness of ALE
+    env = RandomNullopsOnReset(env, max_nullops=config['max_nullops'])
+    if config['terminate_on_loss_of_life']:
+        env = TerminateOnLostLive(env)
     env = AtariObservation(env, shape=config['observation_shape'])
     env = ToTensor(env)
     env = FrameSkip(env, n_frames=config['n_frame_skip'], kind='max')
@@ -174,6 +159,7 @@ with wandb.init(
     done, n_episodes, n_qnet_updates = True, 0, 0
     n_episode_start, f_episode_reward = 0, 0.
     n_checkpoint_countdown, n_freeze_countdown = 0, 0
+    n_update_countdown = 0
 
     # intermediate output viewer: use custom identity taps, instead of Conv2d
     viewer = clsViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
@@ -232,6 +218,12 @@ with wandb.init(
 
         if len(replay) < config['n_transitions']:
             continue
+
+        # train with a preset frequency
+        n_update_countdown -= 1
+        if n_update_countdown > 0:
+            continue
+        n_update_countdown = config['n_update_frequency']
 
         # train for one batch only if the buffer has enough data.
         q_net.train()

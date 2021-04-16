@@ -5,6 +5,8 @@ import torch
 
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
+from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLive
+
 from rlplay.zoo.breakout import BreakoutQNet
 
 from rlplay.utils import greedy
@@ -17,11 +19,13 @@ device = torch.device('cpu')
 
 # an instance of atari Breakout-v4
 env = gym.make('BreakoutNoFrameskip-v4')
-# env = TerminateOnLostLive(env)  # messes up the randomness of ALE
+env = RandomNullopsOnReset(env, max_nullops=30)
+env = TerminateOnLostLive(env)  # messes up the randomness of ALE
 env = AtariObservation(env, shape=(84, 84))
 env = ToTensor(env)
 env = FrameSkip(env, n_frames=4, kind='max')
 env = ObservationQueue(env, n_size=4)
+print(env.unwrapped.get_action_meanings())
 
 q_net = BreakoutQNet(env.action_space.n).to(device)
 print(repr(q_net))
