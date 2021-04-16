@@ -61,6 +61,11 @@ class ImageViewer(Window):
         self.clear()
 
         if hasattr(self, 'texture'):
+            gl.glTexParameteri(
+                gl.GL_TEXTURE_2D,
+                gl.GL_TEXTURE_MAG_FILTER,
+                gl.GL_NEAREST
+            )
             self.texture.blit(0, 0, width=self.width, height=self.height)
 
         if flip:
@@ -110,11 +115,6 @@ class ImageViewer(Window):
         self.switch_to()
 
         # convert image data to gl texture
-        gl.glTexParameteri(
-            gl.GL_TEXTURE_2D,
-            gl.GL_TEXTURE_MAG_FILTER,
-            gl.GL_NEAREST
-        )
         texture = ImageData(
             width, height, format, data.tobytes(),
             pitch=-width * len(format)).get_texture()
