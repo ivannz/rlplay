@@ -9,6 +9,9 @@ from pyglet import gl
 from pyglet.image import ImageData
 from pyglet.window import Window, key, mouse
 
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+
 
 class ImageViewer(Window):
     """My own version of the image viewer.
@@ -64,7 +67,31 @@ class ImageViewer(Window):
             self.flip()
 
     def imshow(self, data, *, resize=False):
-        # figure out hte image format
+        """Show the monochrome, RGB or RGBA image data, or a matplotlib Figure.
+
+        Details
+        -------
+        To prevent memory leaks it is advisable to close the figure afterwards,
+        using `plt.close(fig)`. However, creating a new figure and then closing
+        it appears to incur too much overhead. Hence, it is recommended to
+        create a figure and axes only onсe, and then clear them after every
+        call to `.imshow`. Lowering `figsize` and `dpi` may also improve fps.
+        """
+
+        # use the `agg` backend directly to create rgba arrays from figures
+        # https://matplotlib.org/stable/gallery/user_interfaces/canvasagg.html
+        if isinstance(data, Figure):
+            # assume all necessary plotting and artistry has been done
+            canvas = FigureCanvasAgg(data)
+            # render into a buffer and convert to numy arrray
+            canvas.draw()
+            data = np.array(canvas.buffer_rgba())
+
+        if not isinstance(data, np.ndarray):
+            raise TypeError(f'`data` must be either a numpy array or a'
+                            f' matplotlib `Figure`. Got `{type(data)}`.')
+
+        # figure out the image format
         if not data.dtype == np.uint8:
             raise TypeError(f'`data` must be `np.unit8`. Got `{data.dtype}`.')
 
@@ -111,8 +138,26 @@ class ImageViewer(Window):
 
 if __name__ == '__main__':
     import time
+    import matplotlib.pyplot as plt
 
     viewer = ImageViewer()
     while viewer.isopen:
         viewer.imshow(np.random.randint(0, 255, size=(128, 128), dtype=np.uint8))
         time.sleep(0.01)
+
+    # cannot reuse the same viewer window
+    viewer = ImageViewer()
+
+    t0, t = 0., np.linspace(0, 1, num=10001)
+    fig, ax = plt.subplots(1, 1, figsize=(4, 3), dpi=120)
+    while viewer.isopen:
+        ax.set_title(f'matplotlib example {t0:.1e}', fontsize='small')
+        ax.plot(t, np.sin((t0 + t) * np.pi * .2 * 35))
+        ax.plot(t, np.sin((t0 + t) * np.pi * .2 * 21))
+        ax.plot(t, np.sin((t0 + t) * np.pi * .2 * 7))
+
+        viewer.imshow(fig)
+        ax.clear()
+        t0 += 1e-2
+
+    plt.close(fig)
