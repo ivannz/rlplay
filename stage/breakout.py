@@ -12,6 +12,7 @@ from torch.nn.utils import clip_grad_norm_
 from rlplay.algo import dqn
 from rlplay.buffer import SimpleBuffer, PriorityBuffer
 from rlplay.utils import linear, greedy
+from rlplay.utils import backupifexists
 from rlplay.utils import to_device, ensure
 
 from rlplay.utils import ToTensor
@@ -82,7 +83,7 @@ config = dict(
     n_steps_total=50_000_0+00,
     n_freeze_frequency=10_0+00,
     n_checkpoint_frequency=250,
-    lr=2e-3,  # 25e-5,
+    lr=25e-5,
     epsilon=dict(
         t0=0,
         t1=1_000_00+0,
@@ -159,9 +160,7 @@ with wandb.init(
 
         # rename the latest and keep the backup, unless we do not train
         if config['n_steps_total'] > 0:
-            dttm = time.strftime('%Y%m%d-%H%M%S')
-            os.rename(latest_ckpt,
-                      os.path.join(path_ckpt, f'backup__{dttm}.pt'))
+            backupifexists(latest_ckpt, prefix='backup')
 
     target_q_net = copy.deepcopy(q_net).to(device)
     update_target_model(src=q_net, dst=target_q_net)
@@ -290,10 +289,12 @@ with wandb.init(
 
         # from time to time save the current Q-net
         if n_checkpoint_countdown <= 0:
+            backupifexists(latest_ckpt, prefix=f'ckpt__{n_step}')
             torch.save({
                 'q_net': q_net.state_dict(),
             }, latest_ckpt)
             n_checkpoint_countdown = config['n_checkpoint_frequency']
+
         n_checkpoint_countdown -= 1
 
     viewer.close()
