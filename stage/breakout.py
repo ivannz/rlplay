@@ -18,7 +18,7 @@ from rlplay.utils import to_device, ensure
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
 from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLive
-from rlplay.zoo.breakout import BreakoutQNet
+from rlplay.zoo.models import BreakoutQNet
 
 from rlplay.utils import get_instance  # yep, this one, again -_-
 
