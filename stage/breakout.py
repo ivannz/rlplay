@@ -94,6 +94,7 @@ config = dict(
     max_nullops=30,  # it appears that noops affect the randomness of ALE
     terminate_on_loss_of_life=False,
     batch_norm=False,
+    clip_rewards=0.,
 )
 
 # the device
@@ -196,8 +197,8 @@ with wandb.init(
         f_step_start = time.monotonic()
         with torch.no_grad(), viewer:
             state_.copy_(torch.from_numpy(state))  # copy_ also broadcasts
-            action = int(
-                greedy(q_net(state_), epsilon=epsilon_).squeeze(0))
+            q_values = q_net(state_)
+            action = int(greedy(q_values, epsilon=epsilon_).squeeze(0))
 
         # get the environment's response and store it
         state_next, reward, done, info = env.step(action)
@@ -216,6 +217,7 @@ with wandb.init(
             'f_step_time': time.monotonic() - f_step_start,
             'f_epsilon': epsilon_,
             'f_reward': reward,
+            'f_avg_q_value': float(q_values.mean()),
         }, step=n_step, commit=False)
 
         if len(replay) < config['n_transitions']:
@@ -235,6 +237,10 @@ with wandb.init(
         for _ in range(config['n_batches_per_update']):
             batch = replay.draw(config['n_batch_size'], replacement=True)
             batch = to_device(ensure(batch, schema=schema), device=device)
+
+            if config['clip_rewards'] > 0.:
+                batch['reward'].clamp_(config['clip_rewards'],
+                                       -config['clip_rewards'])
 
             # beta scheduling for loss weights (related to prioritized replay)
             weight = batch.get('_weight')
