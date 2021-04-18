@@ -3,15 +3,47 @@ import gym
 import time
 import torch
 
+
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
 from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLive
 
-from rlplay.zoo.breakout import BreakoutQNet
+from rlplay.zoo.models import BreakoutQNet
 
 from rlplay.utils import greedy
 
 from rlplay.utils.plotting import Conv2DViewer
+
+import rlplay.utils.integration.gym  # noqa: F401; apply patches to gym
+
+import matplotlib.pyplot as plt
+
+from matplotlib.ticker import EngFormatter
+from rlplay.utils.plotting import ImageViewer
+
+
+def expand(min, max, rtol=5e-2, atol=1e-1):
+    min = min - abs(min) * rtol - atol
+    max = max + abs(max) * rtol + atol
+    return min, max
+
+
+def show_q_values(vals, labels=None, title=None, *, ax=None):
+    ax = ax or plt.gca()
+
+    if title is not None:
+        ax.set_title(title)
+    ax.yaxis.set_major_formatter(EngFormatter(unit=''))
+
+    indices = list(range(len(vals)))
+    bars = ax.bar(indices, vals.tolist())
+    ax.set_ylim(expand(float(vals.min()), float(vals.max())))
+
+    if labels is not None:
+        ax.set_xticks(indices)
+        ax.set_xticklabels(labels)
+
+    return bars
 
 
 path_ckpt = os.path.join(os.path.abspath('./runs'), 'ckpt')
@@ -20,7 +52,7 @@ device = torch.device('cpu')
 # an instance of atari Breakout-v4
 env = gym.make('BreakoutNoFrameskip-v4')
 env = RandomNullopsOnReset(env, max_nullops=30)
-env = TerminateOnLostLive(env)  # messes up the randomness of ALE
+# env = TerminateOnLostLive(env)  # messes up the randomness of ALE
 env = AtariObservation(env, shape=(84, 84))
 env = ToTensor(env)
 env = FrameSkip(env, n_frames=4, kind='max')
@@ -53,10 +85,19 @@ def rollout(module, viewer=None):
 
         state_[0].copy_(torch.from_numpy(obs))
         with viewer:
-            q_value = module(state_).squeeze(0)
+            q_values = module(state_).squeeze(0)
 
-        # print(q_value.cpu().numpy())
-        action = int(greedy(q_value, epsilon=0.1))
+        action = int(greedy(q_values, epsilon=0.05))
+
+        # plot q-values
+        ax.clear()
+        bars = show_q_values(q_values, ax=ax, title=f'step {n_step}',
+                             labels=env.unwrapped.get_action_meanings())
+        bars.patches[action].set_facecolor('C1')
+
+        fig.tight_layout()
+        hist.imshow(fig)
+
         obs, reward, done, info = env.step(action)
 
         totrew += reward
@@ -69,6 +110,11 @@ def rollout(module, viewer=None):
 
 
 viewer = Conv2DViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
+hist = ImageViewer(vsync=True)
 with env:
+    fig, ax = plt.subplots(1, 1, figsize=(4, 3), dpi=60)
     while rollout(q_net, viewer):
         pass
+    plt.close(fig)
+
+hist.close()
