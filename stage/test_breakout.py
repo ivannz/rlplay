@@ -49,6 +49,8 @@ def show_q_values(vals, labels=None, title=None, *, ax=None):
 path_ckpt = os.path.join(os.path.abspath('./runs'), 'ckpt')
 device = torch.device('cpu')
 
+epsilon = 0.05
+
 # an instance of atari Breakout-v4
 env = gym.make('BreakoutNoFrameskip-v4')
 env = RandomNullopsOnReset(env, max_nullops=30)
@@ -59,13 +61,16 @@ env = FrameSkip(env, n_frames=4, kind='max')
 env = ObservationQueue(env, n_size=4)
 print(env.unwrapped.get_action_meanings())
 
-q_net = BreakoutQNet(env.action_space.n).to(device)
+q_net = BreakoutQNet(env.action_space.n, batch_norm=False).to(device)
 print(repr(q_net))
 
 checkpoint = os.path.join(path_ckpt, 'latest.pt')
 if os.path.isfile(checkpoint):
     ckpt = torch.load(checkpoint, map_location=torch.device('cpu'))
     q_net.load_state_dict(ckpt['q_net'])
+
+else:
+    print(f'Cannot locate `{checkpoint}`.')
 
 state_ = torch.empty(1, *env.observation_space.shape,
                      dtype=torch.float32, device=device)
@@ -81,17 +86,17 @@ def rollout(module, viewer=None):
     while not done:
         if not env.render(mode='human'):
             return False
-        time.sleep(0.01)
 
-        state_[0].copy_(torch.from_numpy(obs))
+        state_.copy_(torch.from_numpy(obs))
         with viewer:
             q_values = module(state_).squeeze(0)
 
-        action = int(greedy(q_values, epsilon=0.05))
+        action = int(greedy(q_values, epsilon=epsilon))
 
         # plot q-values
         ax.clear()
-        bars = show_q_values(q_values, ax=ax, title=f'step {n_step}',
+        title = f'step {n_step} Q_avg {float(q_values.mean()):.1e}'
+        bars = show_q_values(q_values, ax=ax, title=title,
                              labels=env.unwrapped.get_action_meanings())
         bars.patches[action].set_facecolor('C1')
 

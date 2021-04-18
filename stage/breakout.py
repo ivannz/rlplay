@@ -22,6 +22,7 @@ from rlplay.zoo.models import BreakoutQNet
 
 from rlplay.utils import get_instance  # yep, this one, again -_-
 
+import rlplay.utils.integration.gym  # noqa: F401; apply patches to gym
 from rlplay.utils.plotting import Conv2DViewer, DummyConv2DViewer
 
 from functools import partial
@@ -78,14 +79,14 @@ config = dict(
     ),
     # replay=dict(
     #     cls="<class 'rlplay.buffer.simple.SimpleBuffer'>",
-    #     capacity=1_000_000,
+    #     capacity=1_000_00+0,
     # ),
     replay=dict(
         cls="<class 'rlplay.buffer.priority.PriorityBuffer'>",
-        capacity=1_000_000,
+        capacity=1_000_00+0,
         alpha=0.6,
     ),
-    clip_grad_norm=1.0,
+    clip_grad_norm=0.0,
     observation_shape=(84, 84),
     n_frame_stack=4,
     n_frame_skip=4,
@@ -95,6 +96,7 @@ config = dict(
     terminate_on_loss_of_life=False,
     batch_norm=False,
     clip_rewards=0.,
+    clip_td_error=0.,
 )
 
 # the device
@@ -239,8 +241,8 @@ with wandb.init(
             batch = to_device(ensure(batch, schema=schema), device=device)
 
             if config['clip_rewards'] > 0.:
-                batch['reward'].clamp_(config['clip_rewards'],
-                                       -config['clip_rewards'])
+                batch['reward'].clamp_(-config['clip_rewards'],
+                                       config['clip_rewards'])
 
             # beta scheduling for loss weights (related to prioritized replay)
             weight = batch.get('_weight')
@@ -255,12 +257,19 @@ with wandb.init(
             # sgd step
             optim.zero_grad()
             loss.backward()
-            f_grad_norm = clip_grad_norm_(q_net.parameters(),
-                                          max_norm=config['clip_grad_norm'])
+
+            f_grad_norm = float('nan')
+            if config['clip_grad_norm'] > 0.:
+                f_grad_norm = clip_grad_norm_(
+                    q_net.parameters(), max_norm=config['clip_grad_norm'])
+
             optim.step()
 
             # reassign priority (related to prioritized replay)
             priority = abs(info['td_error']).cpu().squeeze(-1)
+            if config['clip_td_error'] > 0.:
+                priority.clamp_(max=config['clip_td_error'])
+
             for j, p in zip(batch['_index'].tolist(), priority.tolist()):
                 replay[j] = p + 1e-6
 
@@ -289,7 +298,7 @@ with wandb.init(
 
         # from time to time save the current Q-net
         if n_checkpoint_countdown <= 0:
-            backupifexists(latest_ckpt, prefix=f'ckpt__{n_step}')
+            # backupifexists(latest_ckpt, prefix=f'ckpt__{n_step}')
             torch.save({
                 'q_net': q_net.state_dict(),
             }, latest_ckpt)
