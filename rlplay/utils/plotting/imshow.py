@@ -39,10 +39,19 @@ class ImageViewer(Window):
     display : str, or None
         Uses the primary display if `None`, otherwise puts the viewer on the
         specified display. `pyglet` only supports multiple displays on Linux.
+
+    vsync : bool, default=False
+        Set the vertical retrace synchronisation to remove flicker caused by
+        the video display not keeping up with buffer flips, and displaying
+        partially stale picture. Setting `vsync=True` results in flicker-free
+        animation, but the rendering becomes blocking, as the window drawing
+        routines wait for the video device to refresh. Setting it to False
+        introduces tearing artifacts, but allows for accurate profiling and
+        real-time response.
     """
 
-    def __init__(self, caption=None, *, display=None):
-        super().__init__(caption=caption, resizable=True, vsync=False,
+    def __init__(self, caption=None, *, display=None, vsync=False):
+        super().__init__(caption=caption, resizable=True, vsync=vsync,
                          display=get_display(display))
 
         # randomly displace the window
@@ -85,21 +94,24 @@ class ImageViewer(Window):
 
         super().on_mouse_drag(x, y, dx, dy, buttons, modifiers)
 
-    def on_draw(self, *, flip=False):
+    def on_draw(self):
         """Redraw the current image."""
-        self.switch_to()
+        # the pyglet.window docs specify:
+        # > The window will already have the GL context, so there is no need to
+        # > call `.switch_to`. The window’s `.flip` method will be called after
+        # > this event, so your event handler should not.
         self.clear()
 
         if hasattr(self, 'texture'):
+            # do not interpolate when resizing textures
             gl.glTexParameteri(
                 gl.GL_TEXTURE_2D,
                 gl.GL_TEXTURE_MAG_FILTER,
                 gl.GL_NEAREST
             )
-            self.texture.blit(0, 0, width=self.width, height=self.height)
 
-        if flip:
-            self.flip()
+            # draw the image data into the window's buffer as a texture
+            self.texture.blit(0, 0, width=self.width, height=self.height)
 
     def imshow(self, data, *, keepdims=True):
         """Show the monochrome, RGB or RGBA image data, or a matplotlib Figure.
@@ -159,7 +171,7 @@ class ImageViewer(Window):
         else:
             raise TypeError(f'`data` is not an image `{data.shape}`.')
 
-        # ensure current window's gl context
+        # ensure the current window's gl context before manipulating textures
         self.switch_to()
 
         # convert image data to gl texture
@@ -172,28 +184,43 @@ class ImageViewer(Window):
             self.set_size(texture.width, texture.height)
         self.texture = texture
 
+        # handle events and draw the data
         self.render()
 
     def render(self):
-        """Respond to the recent window and redraw the current image."""
-        # a piece of event loop
+        """One pass of the event loop: respond to events and redraw."""
+        # ensure the proper gl context before dispatching and drawing
+        self.switch_to()
+
+        # poll the os event queue and call the attached handlers
         self.dispatch_events()
 
         # manually call on-draw make it immediate
-        self.on_draw(flip=True)
+        self.on_draw()
+
+        # swap the OpenGL front and back buffers.
+        self.flip()
 
 
 if __name__ == '__main__':
     import time
     import matplotlib.pyplot as plt
 
-    viewer = ImageViewer()
+    unused = ImageViewer('Static Image')
+    unused.imshow(np.random.randint(0, 255, size=(128, 128, 3), dtype=np.uint8))
+
+    viewer = ImageViewer('Dynamic Image')
     while viewer.isopen:
+        # change the contents, and handle window's events to make it responsive
         viewer.imshow(np.random.randint(0, 255, size=(128, 128), dtype=np.uint8))
+
+        # just process window's events
+        unused.render()
+
         time.sleep(0.01)
 
     # cannot reuse the same viewer window
-    viewer = ImageViewer()
+    viewer = ImageViewer('Matplotlib Figure', vsync=True)
 
     t0, t = 0., np.linspace(0, 1, num=10001)
     fig, ax = plt.subplots(1, 1, figsize=(4, 3), dpi=120)
