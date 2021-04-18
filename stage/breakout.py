@@ -93,6 +93,7 @@ config = dict(
     double=True,
     max_nullops=30,  # it appears that noops affect the randomness of ALE
     terminate_on_loss_of_life=False,
+    batch_norm=False,
 )
 
 # the device
@@ -138,7 +139,8 @@ with wandb.init(
                          dtype=torch.float32, device=device)
 
     # q_net, target_q_net
-    q_net = BreakoutQNet(env.action_space.n).to(device)
+    q_net = BreakoutQNet(
+        env.action_space.n, batch_norm=config['batch_norm']).to(device)
     if os.path.isfile(latest_ckpt):
         checkpoint = torch.load(latest_ckpt, map_location=torch.device('cpu'))
         q_net.load_state_dict(checkpoint['q_net'])
