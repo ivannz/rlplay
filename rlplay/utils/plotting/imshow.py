@@ -12,6 +12,8 @@ from pyglet.window import Window, key, mouse
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
+from .grid import check_dims
+
 
 def get_display(display):
     if display is None:
@@ -36,6 +38,11 @@ class ImageViewer(Window):
         The caption of the viewer window. Defaults to the current script
         filename if None.
 
+    scale : float, or tuple, None
+        Pixel scaling applied to the image data. A tuple `(W, H)` of positive
+        numbers corresponds to WxH pixels, a single number `S` results in equal
+        scaling and `SxS` pixels. `None` defaults to `1x1` pixels.
+
     display : str, or None
         Uses the primary display if `None`, otherwise puts the viewer on the
         specified display. `pyglet` only supports multiple displays on Linux.
@@ -50,7 +57,9 @@ class ImageViewer(Window):
         real-time response.
     """
 
-    def __init__(self, caption=None, *, display=None, vsync=False):
+    def __init__(self, caption=None, *, scale=None, display=None, vsync=False):
+        self.scale = check_dims(scale or (1, 1), kind=(int, float))
+
         super().__init__(caption=caption, resizable=True, vsync=vsync,
                          display=get_display(display))
 
@@ -80,7 +89,8 @@ class ImageViewer(Window):
     def on_key_press(self, symbol, modifiers):
         """User pressed `SPACE` to fit viewer to the current image's dims."""
         if hasattr(self, 'texture') and symbol == key.SPACE:
-            self.set_size(self.texture.width, self.texture.height)
+            sw, sh = self.scale
+            self.set_size(self.texture.width * sw, self.texture.height * sh)
             return
 
         super().on_key_press(symbol, modifiers)
@@ -111,6 +121,8 @@ class ImageViewer(Window):
             )
 
             # draw the image data into the window's buffer as a texture
+            # blit transforms the texture data only virtually: the texture's
+            # `.width` and `.height` dims still retain original array's shape.
             self.texture.blit(0, 0, width=self.width, height=self.height)
 
     def imshow(self, data, *, keepdims=True):
@@ -181,7 +193,8 @@ class ImageViewer(Window):
 
         # resize if instructed or on the first call to `.imshow`
         if not hasattr(self, 'texture') or not keepdims:
-            self.set_size(texture.width, texture.height)
+            sw, sh = self.scale
+            self.set_size(texture.width * sw, texture.height * sh)
         self.texture = texture
 
         # handle events and draw the data
@@ -209,7 +222,8 @@ if __name__ == '__main__':
     import time
     import matplotlib.pyplot as plt
 
-    unused = ImageViewer('Static Image')
+    # create a static image with custom pixel scaling
+    unused = ImageViewer('Static Image', scale=(2, 4))
     unused.imshow(np.random.randint(0, 255, size=(128, 128, 3), dtype=np.uint8))
 
     viewer = ImageViewer('Dynamic Image')
@@ -223,7 +237,7 @@ if __name__ == '__main__':
         time.sleep(0.01)
 
     # cannot reuse the same viewer window
-    viewer = ImageViewer('Matplotlib Figure', vsync=True)
+    viewer = ImageViewer('Matplotlib Figure', scale=(2, 2), vsync=True)
 
     t0, t = 0., np.linspace(0, 1, num=10001)
     fig, ax = plt.subplots(1, 1, figsize=(4, 3), dpi=120)
