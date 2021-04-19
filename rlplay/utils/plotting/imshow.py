@@ -221,6 +221,48 @@ class ImageViewer(Window):
         # in event loops it is useful to know if the window still exists
         return self.isopen
 
+    def read_buffer(self, format='rgb'):
+        """Read back the recently rendered color data from the window's buffer.
+
+        Returns
+        -------
+        data : unit8 array, shape=(height, width, n_channels)
+            RGB or RGBA color data.
+
+        Details
+        -------
+        Call to `.read_buffer()` should be preceded by `.render()` in order
+        to read the latest color data. The dims of the returned color array
+        correspond to the width and height of the gl color buffer used for
+        rendering, and may not coincide with the dims of the original image.
+        Typically, they correspond to the window dims scaled by some factor.
+        """
+        assert format in ('rgb', 'rgba')
+        if format == 'rgb':
+            format, n_channels = gl.GL_RGB, 3
+
+        else:
+            format, n_channels = gl.GL_RGBA, 4
+
+        # ensure current gl context
+        self.switch_to()
+
+        # make sure the color data we read back is fresh
+        # self.on_draw()
+        # `.flip()` x2 may cause unnecessary vsync and flicker
+
+        # allocate unit8 buffer for RGB data
+        width, height = self.get_framebuffer_size()
+        buf = (gl.GLubyte * (height * width * n_channels))(0)
+
+        # read a block of pixels from the current display frame buffer
+        gl.glReadBuffer(gl.GL_FRONT)  # FRONT -- display, BACK -- drawing
+        gl.glReadPixels(0, 0, width, height, format, gl.GL_UNSIGNED_BYTE, buf)
+
+        # properly reshape and reorder the data
+        flat = np.frombuffer(buf, dtype=np.uint8)
+        return flat.reshape(height, width, n_channels)[::-1].copy()
+
 
 if __name__ == '__main__':
     import time
