@@ -3,17 +3,29 @@ import torch
 from math import sqrt, ceil
 
 
+def check_dims(first, second=None, *, kind=(float, int), positive=True):
+    """"""
+    if isinstance(first, kind):
+        dims = first, (first if second is None else second)
+
+    elif isinstance(first, (list, tuple)) and len(first) == 2:
+        dims = first
+
+    else:
+        raise TypeError(f'Expected a number or a pair. Got `{first}`.')
+
+    assert all(isinstance(p, kind) and p >= 0 for p in dims)
+    if positive and any(p <= 0 for p in dims):
+        raise ValueError(f'`{dims}` must be strictly positive.')
+
+    return dims
+
+
 def make_grid(tensor, *, aspect=(16, 9), pixel=(1, 1), normalize=True):
     """Another version of `torchvision.utils.make_grid`"""
 
-    # validate args
-    if isinstance(aspect, float):
-        aspect = aspect, 1
-    assert all(isinstance(a, (float, int)) and a > 0 for a in aspect)
-
-    if isinstance(pixel, int):
-        pixel = pixel, pixel
-    assert all(isinstance(p, int) and p > 0 for p in pixel)
+    # validate aspec and pixel scaling
+    aspect, pixel = check_dims(aspect, 1), check_dims(pixel, kind=int)
 
     # the tensor is either grayscale or rgb
     assert tensor.dim() in (3, 4)
