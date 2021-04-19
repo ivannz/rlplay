@@ -93,7 +93,7 @@ class Conv2DViewer(BaseModuleHook):
 
         # make a grid of images with a checkerboard placeholder
         self.feature_maps[label] = make_grid(
-            tensor, aspect=self.aspect, pixel=self.pixel,
+            tensor, aspect=self.aspect,
             normalize=normalize).numpy()
 
     def __iter__(self):
@@ -110,13 +110,14 @@ class Conv2DViewer(BaseModuleHook):
             viewer.close()
         self.viewers.clear()
 
-    def draw(self):
+    def draw(self, *, vsync=False):
         """Draw the most recently collected outputs."""
         # create as many Viewers are there are convolutional layers
         for label, image in self:
             if label not in self.viewers:
                 self.viewers[label] = ImageViewer(
-                    caption=f'Feature maps of `{label}`')
+                    caption=f'Feature maps of `{label}`',
+                    scale=self.pixel, vsync=vsync)
 
             # update the image data
             self.viewers[label].imshow((image * 255).astype(np.uint8))
@@ -140,7 +141,7 @@ if __name__ == '__main__':
     ]))
 
     print('Tapping layers with names strating with `conv_` or `block_`')
-    viewer = Conv2DViewer(module, tap=('conv_', 'block_'))
+    viewer = Conv2DViewer(module, tap=('conv_', 'block_'), pixel=(2, 2))
     while True:
         with viewer:
             module(torch.randn(1, 32, 28, 28))
