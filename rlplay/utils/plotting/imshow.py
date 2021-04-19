@@ -185,7 +185,7 @@ class ImageViewer(Window):
         self.texture = texture
 
         # handle events and draw the data
-        self.render()
+        return self.render()
 
     def render(self):
         """One pass of the event loop: respond to events and redraw."""
@@ -200,6 +200,9 @@ class ImageViewer(Window):
 
         # swap the OpenGL front and back buffers.
         self.flip()
+
+        # in event loops it is useful to know if the window still exists
+        return self.isopen
 
 
 if __name__ == '__main__':
