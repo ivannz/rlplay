@@ -86,6 +86,10 @@ class ImageViewer(Window):
         """Flag indicating if a viewer window is open."""
         return not self._was_closed  # self.close() sets this flag
 
+    def __bool__(self):
+        """Truth value testing amounts to checking if the window is open."""
+        return self.isopen
+
     def on_key_press(self, symbol, modifiers):
         """User pressed `SPACE` to fit viewer to the current image's dims."""
         if hasattr(self, 'texture') and symbol == key.SPACE:
