@@ -43,6 +43,9 @@ class ImageViewer(Window):
         numbers corresponds to WxH pixels, a single number `S` results in equal
         scaling and `SxS` pixels. `None` defaults to `1x1` pixels.
 
+    resizable : bool, default=True
+        Specify whether the image viewer has resizable window.
+
     display : str, or None
         Uses the primary display if `None`, otherwise puts the viewer on the
         specified display. `pyglet` only supports multiple displays on Linux.
@@ -57,11 +60,12 @@ class ImageViewer(Window):
         real-time response.
     """
 
-    def __init__(self, caption=None, *, scale=None, display=None, vsync=False):
+    def __init__(self, caption=None, *, scale=None, resizable=True,
+                 display=None, vsync=False):
         self.scale = check_dims(scale or (1, 1), kind=(int, float))
 
-        super().__init__(caption=caption, resizable=True, vsync=vsync,
-                         display=get_display(display))
+        super().__init__(caption=caption, resizable=resizable,
+                         vsync=vsync, display=get_display(display))
 
         # randomly displace the window
         pos_y = randint(0, max(self.screen.height - self.height, 0))
