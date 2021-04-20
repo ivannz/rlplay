@@ -133,6 +133,7 @@ class ImageViewer(Window):
         # > The window will already have the GL context, so there is no need to
         # > call `.switch_to`. The window’s `.flip` method will be called after
         # > this event, so your event handler should not.
+        # gl.glClearColor(0, 0, 0, 0)
         self.clear()
 
         if hasattr(self, 'texture'):
@@ -142,6 +143,20 @@ class ImageViewer(Window):
                 gl.GL_TEXTURE_MAG_FILTER,
                 gl.GL_NEAREST
             )
+
+            # textures with alpha channels require gl blending capability
+            gl.glEnable(gl.GL_BLEND)
+
+            # Additive blending `R = S * F_s + D * F_d` for `c4f` f-RGBA
+            gl.glBlendEquation(gl.GL_FUNC_ADD)
+
+            # Factors `F_s = S_a` and `F_d = 1 - S_a` give transparency fx,
+            #    >>> gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+            # but we set `F_s = 1.` and `F_d = 0.` for complete overwrite.
+            # see https://learnopengl.com/Advanced-OpenGL/Blending
+            #     and https://www.khronos.org/opengl/wiki/Blending
+            #     and https://stackoverflow.com/a/18497511 (for opacity eqn)
+            gl.glBlendFunc(gl.GL_ONE, gl.GL_ZERO)
 
             # draw the image data into the window's buffer as a texture
             # blit transforms the texture data only virtually: the texture's
