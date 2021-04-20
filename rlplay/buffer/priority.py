@@ -158,12 +158,8 @@ class HeapBuffer(PriorityBuffer):
             # `_index` and `_heapq` reference the same mutable data
             item[-1] = None
             self.n_garbage += 1
-            _id = item[-2]
 
-        else:
-            _id = next(self._id)
-
-        item = [priority, _id, position]  # list is mutable
+        item = [priority, next(self._id), position]  # list is mutable
         self._index[position] = item
         heappush(self._heapq, item)
 
@@ -173,15 +169,15 @@ class HeapBuffer(PriorityBuffer):
 
     def _compactify(self):
         # remove garbage from the queue and reindex
-        _heapq, _index = [], {}
-        for prio, _id, pos in self._heapq:
+        _heapq, _index, _id = [], {}, count()
+        for prio, _, pos in self._heapq:
             if pos is not None:
-                entry = [prio, _id, pos]
+                entry = [prio, next(_id), pos]
                 _heapq.append(entry)
                 _index[pos] = entry
 
         heapify(_heapq)
-        self._heapq, self._index = _heapq, _index
+        self._heapq, self._index, self._id = _heapq, _index, _id
         self.n_garbage = 0
 
     def commit(self, *, _index=_NoValue, _weight=_NoValue, **kwdata):
@@ -216,7 +212,7 @@ if __name__ == '__main__':
 
     from random import random
 
-    self = HeapBuffer(capacity=640, alpha=1., factor=100)
+    self = HeapBuffer(capacity=640, alpha=1., factor=10)
     state = count()
 
     lengths, ticks, n_garbage = [], [], []
