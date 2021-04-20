@@ -73,6 +73,7 @@ class ImageViewer(Window):
         self.set_location(self.screen.x + pos_x, self.screen.y + pos_y)
 
         # XXX maybe use FPSDisplay from `pyglet.window`
+        self._init_scale = self.scale
 
     def close(self):
         """Close the viewer window."""
@@ -95,13 +96,34 @@ class ImageViewer(Window):
         return self.isopen
 
     def on_key_press(self, symbol, modifiers):
-        """User pressed `SPACE` to fit viewer to the current image's dims."""
-        if hasattr(self, 'texture') and symbol == key.SPACE:
-            sw, sh = self.scale
-            self.set_size(self.texture.width * sw, self.texture.height * sh)
-            return
+        """Handle `-/_` and `+/=` to zoom in and out, or `0` to fit the viewer
+        to the current image's dimensions.
+        """
+        # always fall back to the default handler
+        if not hasattr(self, 'texture') or symbol not in {
+            key._0, key.MINUS, key.PLUS, key.UNDERSCORE, key.EQUAL
+        }:
+            return super().on_key_press(symbol, modifiers)
 
-        super().on_key_press(symbol, modifiers)
+        sw, sh = self._init_scale
+
+        # reset to the scale set at initialization
+        if symbol == key._0:
+            self.scale = sw, sh
+
+        # zoom out by 25% limited by the tenth of the original scaling factor
+        elif symbol in (key.MINUS, key.UNDERSCORE):
+            self.scale = max(sw / 10, self.scale[0] / 1.25), \
+                         max(sh / 10, self.scale[1] / 1.25)
+
+        # zoom in by 25% bounded by ten time the inital scaling
+        elif symbol in (key.PLUS, key.EQUAL):
+            self.scale = min(sw * 10, self.scale[0] * 1.25), \
+                         min(sh * 10, self.scale[1] * 1.25)
+
+        # fit the window to the image dims proportional to the pixel scaling
+        sw, sh = self.scale
+        self.set_size(self.texture.width * sw, self.texture.height * sh)
 
     def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
         """Move the window around when the user drags it with a mouse."""
