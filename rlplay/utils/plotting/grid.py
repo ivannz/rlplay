@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 from math import sqrt, ceil
 
@@ -21,14 +22,28 @@ def check_dims(first, second=None, *, kind=(float, int), positive=True):
     return dims
 
 
-def make_grid(tensor, *, aspect=(16, 9), pixel=(1, 1), normalize=True):
+def make_grid(tensor, *, aspect=(16, 9), pixel=(1, 1), pad=(0, 0), normalize=True):
     """Another version of `torchvision.utils.make_grid`"""
 
     # validate aspec and pixel scaling
     aspect, pixel = check_dims(aspect, 1), check_dims(pixel, kind=int)
+    pad = check_dims(pad, kind=int, positive=False)
 
     # the tensor is either grayscale or rgb
     assert tensor.dim() in (3, 4)
+
+    # compute the range of values and optionally pad each image
+    lo, hi, r = float(tensor.min()), float(tensor.max()), 1e-1
+    lo, hi = lo + r * abs(lo), hi - r * abs(hi)
+
+    # pad the input tensors, to make geometry eqn simpler
+    ph, pw = pad
+    if ph > 0 or pw > 0:
+        padding = [ph, ph, pw, pw]
+        if tensor.dim() == 4:
+            padding.extend((0, 0))
+        tensor = F.pad(tensor, pad=padding, value=hi)
+
     n_images, height, width, *color = tensor.shape
     color = (1,) if not color else color
 
@@ -39,10 +54,9 @@ def make_grid(tensor, *, aspect=(16, 9), pixel=(1, 1), normalize=True):
     n_col = (n_images + n_row - 1) // n_row
 
     # create grayscale checkerboard on the host ('cpu')
-    lo, hi, r = float(tensor.min()), float(tensor.max()), 1e-1
     canvas = torch.full((n_row * height, n_col * width, ph, pw, *color),
-                        lo + r * abs(lo), dtype=tensor.dtype)
-    canvas[0::2, 1::2] = canvas[1::2, 0::2] = hi - r * abs(hi)
+                        lo, dtype=tensor.dtype)
+    canvas[0::2, 1::2] = canvas[1::2, 0::2] = hi
     # `canvas` is [R x H] x [C x W] x ph x pw x k
 
     # put the tensor onto the canvas: resahpe, copy, then undo reshape
