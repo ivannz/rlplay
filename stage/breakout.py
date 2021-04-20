@@ -23,6 +23,7 @@ from rlplay.zoo.models import BreakoutQNet
 from rlplay.utils import get_instance  # yep, this one, again -_-
 
 import rlplay.utils.integration.gym  # noqa: F401; apply patches to gym
+
 from rlplay.utils.plotting import Conv2DViewer, DummyConv2DViewer
 
 from functools import partial
@@ -54,47 +55,54 @@ os.makedirs(path_ckpt, exist_ok=True)
 
 latest_ckpt = os.path.join(path_ckpt, 'latest.pt')
 
-# hyperparamters
+# hyperparamters: a step is one interaction with environment
 config = dict(
     seed=None,  # 897_458_056
+    double=True,
     gamma=0.99,
-    n_batch_size=32,
-    n_transitions=50_0+00,  # 500 is a really small replay buffer
-    n_batches_per_update=1,
-    n_steps_total=50_000_0+00,
-    n_freeze_frequency=10_0+00,
-    n_checkpoint_frequency=250,
     lr=25e-5,
-    epsilon=dict(
-        t0=0,
-        t1=1_000_00+0,
+    epsilon=dict(         # epsilon-greedy exploration policy
+        t0=0,             # linear decay from (t=0, v=1.) to (t=100k, v=0.1)
+        t1=1_000_00+0,    # maybe we should use cyclic epsilon schedule?
         v0=1e-0,
         v1=1e-1,
     ),
-    beta=dict(
-        t0=0,
-        t1=25_000_0+00,
+    n_transitions=50_0+00,       # num. burn-in steps to prepopulate the buffer
+    n_steps_total=50_000_0+00,   # total number of steps (excl. burn-in)
+    n_update_frequency=1,        # number of steps between parameter updates
+    n_batches_per_update=1,      # number of sgd training batches in an update
+    n_batch_size=32,             # batch size in a single update
+    n_freeze_frequency=10_000,   # updates between target q-net freezes
+                                 # 10k upd * 1 steps/upd = The rarer the better!
+                                 # increasing from 100 to 10k was RIGHT!
+    n_checkpoint_frequency=250,  # updates between online q-net checkpoints
+    beta=dict(            # importance weight annealing
+        t0=0,             # beta = 0 -- prio. sampling (biased)
+        t1=25_000_0+00,   # beta = 1 -- random sampling (IS -> uniform)
         v0=4e-1,
         v1=1e-0,
     ),
-    # replay=dict(
+    # replay=dict(        # simple ring buffer
     #     cls="<class 'rlplay.buffer.simple.SimpleBuffer'>",
     #     capacity=1_000_00+0,
     # ),
-    replay=dict(
+    replay=dict(          # prioritized ring buffer
         cls="<class 'rlplay.buffer.priority.PriorityBuffer'>",
-        capacity=1_000_00+0,
+        capacity=1_000_00+0,     # smaller buffer may contain less 'garbage',
+                                 # but also means less likely to retain rare
+                                 # but promising states. Also, maybe as the
+                                 # number of steps grows, we should increase
+                                 # the capacity? 100k buffer seems okay.
         alpha=0.6,
     ),
-    clip_grad_norm=0.0,
+    max_nullops=30,              # random number of no-op at the start of an
+                                 #  episode. Appears to affect the prng of ALE.
+    terminate_on_loss_of_life=False,  # whether to restart of loss-of-life
     observation_shape=(84, 84),
     n_frame_stack=4,
     n_frame_skip=4,
-    n_update_frequency=1,
-    double=True,
-    max_nullops=30,  # it appears that noops affect the randomness of ALE
-    terminate_on_loss_of_life=False,
     batch_norm=False,
+    clip_grad_norm=0.0,
     clip_rewards=0.,
     clip_td_error=0.,
 )
@@ -152,6 +160,7 @@ with wandb.init(
         if config['n_steps_total'] > 0:
             backupifexists(latest_ckpt, prefix='backup')
 
+    # copy the target network (twice, for safety)
     target_q_net = copy.deepcopy(q_net).to(device)
     update_target_model(src=q_net, dst=target_q_net)
 
