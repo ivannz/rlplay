@@ -112,6 +112,21 @@ class ImageViewer(Window):
 
         super().on_mouse_drag(x, y, dx, dy, buttons, modifiers)
 
+    def on_resize(self, width, height):
+        """Resize the window, with optional aspect lock."""
+        if hasattr(self, 'aspect'):
+            # maintain `W:H` aspect ratio based on width
+            aw, ah = self.aspect
+            height = int(width * ah / aw)
+
+            # do the lower-level physical widow resizing (exhibits some janky
+            #  `animated` resizing effects)
+            self.set_size(width, height)
+
+        # update the GL viewport and the dims of the orthogonal projection
+        #  see `Window.on_resize` and `Window._projection` docs.
+        super().on_resize(width, height)
+
     def on_draw(self):
         """Redraw the current image."""
         # the pyglet.window docs specify:
