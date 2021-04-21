@@ -1,5 +1,19 @@
-# Created by https://www.gitignore.io/api/macos,python
-# Edit at https://www.gitignore.io/?templates=macos,python
+# Created by https://www.toptal.com/developers/gitignore/api/macos,python,jupyternotebooks
+# Edit at https://www.toptal.com/developers/gitignore?templates=macos,python,jupyternotebooks
+
+### JupyterNotebooks ###
+# gitignore template for Jupyter Notebooks
+# website: http://jupyter.org/
+
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Remove previous ipynb_checkpoints
+#   git rm -r .ipynb_checkpoints/
 
 ### macOS ###
 # General
