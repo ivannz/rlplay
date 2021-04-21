@@ -305,8 +305,8 @@ with wandb.init(
             'f_grad_norm': f_grad_norm[-1],
         }, step=n_step, commit=False)
 
-        # from time to time save the current Q-net
-        if n_checkpoint_countdown <= 0:
+        # save the current Q-net occasionally or at the end of the run
+        if n_checkpoint_countdown <= 0 or (n_step + 1 >= n_total_steps):
             # backupifexists(latest_ckpt, prefix=f'ckpt__{n_step}')
             torch.save({
                 'q_net': q_net.state_dict(),
@@ -316,6 +316,12 @@ with wandb.init(
         n_checkpoint_countdown -= 1
 
     viewer.close()
+
+    # use the experiment's name if available
+    if experiment.name is not None:
+        torch.save({
+            'q_net': q_net.state_dict(),
+        }, os.path.join(path_ckpt, experiment.name + '.pt'))
 # end with
 
 
