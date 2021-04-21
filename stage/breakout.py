@@ -101,7 +101,10 @@ config = dict(
     observation_shape=(84, 84),
     n_frame_stack=4,
     n_frame_skip=4,
-    batch_norm=False,
+    model=dict(
+        cls="<class 'rlplay.zoo.models.breakout.BreakoutQNet'>",
+        batch_norm=False,
+    ),
     clip_grad_norm=0.0,
     clip_rewards=0.,
     clip_td_error=0.,
@@ -118,6 +121,14 @@ with wandb.init(
 
     config = experiment.config
 
+    # dtype schema for iterating over the buffer
+    schema = dict(state=torch.float, action=torch.long, reward=torch.float,
+                  state_next=torch.float, done=torch.bool, info=None)
+
+    # create a dedicated generator for experience buffers
+    g_cpu = torch.Generator(torch.device('cpu'))
+    replay = get_instance(**config['replay'], generator=g_cpu)
+
     # an instance of atari Breakout-v4
     env = gym.make('BreakoutNoFrameskip-v4')
     env = RandomNullopsOnReset(env, max_nullops=config['max_nullops'])
@@ -128,30 +139,12 @@ with wandb.init(
     env = FrameSkip(env, n_frames=config['n_frame_skip'], kind='max')
     env = ObservationQueue(env, n_size=config['n_frame_stack'])
 
-    # wandb-friendly monitor
-    if monitor_gym:
-        env = Monitor(env, force=True,
-                      directory=mkdtemp(prefix='mon_', dir=root))
-
-    # set env seed
-    if config['seed'] is not None:
-        env.seed(config['seed'])
-
-    # dtype schema for iterating over the buffer
-    schema = dict(state=torch.float, action=torch.long, reward=torch.float,
-                  state_next=torch.float, done=torch.bool, info=None)
-
-    # create a dedicated generator for experience buffers
-    g_cpu = torch.Generator(torch.device('cpu'))
-    replay = get_instance(**config['replay'], generator=g_cpu)
-
-    # on-device storage for state
+    # on-device storage for state (one-element batch)
     state_ = torch.empty(1, *env.observation_space.shape,
                          dtype=torch.float32, device=device)
 
     # q_net, target_q_net
-    q_net = BreakoutQNet(
-        env.action_space.n, batch_norm=config['batch_norm']).to(device)
+    q_net = get_instance(env.action_space.n, **config['model']).to(device)
     if os.path.isfile(latest_ckpt):
         checkpoint = torch.load(latest_ckpt, map_location=torch.device('cpu'))
         q_net.load_state_dict(checkpoint['q_net'])
@@ -166,7 +159,11 @@ with wandb.init(
 
     # the optimizer and schedulers
     optim = torch.optim.Adam(q_net.parameters(), lr=config['lr'])
+
+    # epsilon-greedy exploration schedule
     epsilon_schedule = partial(linear, **config['epsilon'])
+
+    # priority sampled estimator's bias schedule
     beta_schedule = partial(linear, **config['beta'])
 
     # request immediate env reset
@@ -175,9 +172,18 @@ with wandb.init(
     n_checkpoint_countdown, n_freeze_countdown = 0, 0
     n_update_countdown = 0
 
+    # set env seed
+    if config['seed'] is not None:
+        env.seed(config['seed'])
+
     # intermediate output viewer: use custom identity taps, instead of Conv2d
     viewer = clsViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
     viewer.toggle(False)  # inactive by default: won't collect intermediates
+
+    # wandb-friendly monitor: does not affect the parameters of the wrapped env
+    if monitor_gym:
+        env = Monitor(env, directory=mkdtemp(prefix='mon_', dir=root),
+                      force=True)
 
     # count the burn-in as well
     n_total_steps = config['n_steps_total'] + config['n_transitions']
