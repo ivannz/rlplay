@@ -171,15 +171,22 @@ with wandb.init(
     # priority sampled estimator's bias schedule
     beta_schedule = partial(linear, **config['beta'])
 
-    # request immediate env reset
-    done, n_episodes, n_qnet_updates = True, 0, 0
+    # various statistics
+    n_episodes, n_qnet_updates = 0, 0
     n_episode_start, f_episode_reward = 0, 0.
     n_checkpoint_countdown, n_freeze_countdown = 0, 0
     n_update_countdown = 0
 
+    # keep track of action counts per episode (for debug)
+    l_episode_actions = []
+    action_names = env.unwrapped.get_action_meanings()
+
     # set env seed
     if config['seed'] is not None:
         env.seed(config['seed'])
+
+    # request immediate env reset
+    done = True
 
     # intermediate output viewer: use custom identity taps, instead of Conv2d
     viewer = clsViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
@@ -198,16 +205,24 @@ with wandb.init(
         # handle episodic interaction
         if done:
             # log end of episode
+            n_counts = torch.bincount(
+                torch.tensor(l_episode_actions),
+                minlength=env.action_space.n)
+
+            # wandb reacts to nested dicts and to slashes,
+            #  nested dicts are flattened with `dot`
             experiment.log({
                 'n_episodes': n_episodes,
                 'n_duration': n_step - n_episode_start,
                 'f_episode_reward': f_episode_reward,
+                'n_action': dict(zip(action_names, n_counts.tolist())),
             }, step=n_step, commit=False)
             # assert experiment.step == n_step
 
             # begin a new episode
             n_episodes += 1
             n_episode_start, f_episode_reward = n_step, 0.
+            l_episode_actions = []
             state, done = env.reset(), False
             if render:
                 env.render('human')
@@ -230,6 +245,8 @@ with wandb.init(
         # XXX `info` may have different fields depending on the env
         replay.commit(state=state, action=action, reward=reward,
                       state_next=state_next, done=done)
+
+        l_episode_actions.append(action)
 
         # next state
         state = state_next
