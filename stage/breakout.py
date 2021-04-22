@@ -10,15 +10,15 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 
 from rlplay.algo import dqn
-from rlplay.buffer import SimpleBuffer, PriorityBuffer
+# from rlplay.buffer import SimpleBuffer, PriorityBuffer
 from rlplay.utils import linear, greedy
 from rlplay.utils import backupifexists
-from rlplay.utils import to_device, ensure
+from rlplay.utils.schema import astype
 
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
 from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLive
-from rlplay.zoo.models import BreakoutQNet
+# from rlplay.zoo.models import BreakoutQNet
 
 from rlplay.utils import get_instance  # yep, this one, again -_-
 
@@ -123,7 +123,7 @@ with wandb.init(
 
     # dtype schema for iterating over the buffer
     schema = dict(state=torch.float, action=torch.long, reward=torch.float,
-                  state_next=torch.float, done=torch.bool, info=None)
+                  state_next=torch.float, done=torch.bool)
 
     # create a dedicated generator for experience buffers
     g_cpu = torch.Generator(torch.device('cpu'))
@@ -258,7 +258,7 @@ with wandb.init(
         losses = []
         for _ in range(config['n_batches_per_update']):
             batch = replay.draw(config['n_batch_size'], replacement=True)
-            batch = to_device(ensure(batch, schema=schema), device=device)
+            batch = astype(batch, schema=schema, device=device)
 
             if config['clip_rewards'] > 0.:
                 batch['reward'].clamp_(-config['clip_rewards'],

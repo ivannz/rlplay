@@ -6,7 +6,7 @@ from .wrappers import ObservationQueue, FrameSkip
 from .wrappers import TerminateOnLostLive, RandomNullopsOnReset
 
 from .module import BaseModuleHook
-from .schema import ensure, to_device
+# from .schema import dtype, astype, shape  # names are too generic
 
 from .runtime import get_class, get_instance
 
