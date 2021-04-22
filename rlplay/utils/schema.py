@@ -93,7 +93,7 @@ def astype(batch, *, schema=None, device=None):
 
     Must be used only on structured data collated into `torch.Tensor`-s.
     """
-    def _astype(data, schema=None, device=None):
+    def _astype(data, schema=None):
         # undefined schema means keeping `source` specs
         if schema is None:
             return data
