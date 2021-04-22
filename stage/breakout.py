@@ -144,16 +144,21 @@ with wandb.init(
                          dtype=torch.float32, device=device)
 
     # q_net, target_q_net
-    q_net = get_instance(env.action_space.n, **config['model']).to(device)
     if os.path.isfile(latest_ckpt):
-        checkpoint = torch.load(latest_ckpt, map_location=torch.device('cpu'))
-        q_net.load_state_dict(checkpoint['q_net'])
+        ckpt = torch.load(latest_ckpt, map_location=torch.device('cpu'))
+        spec = ckpt.get('model', config['model'])
+
+        q_net = get_instance(env.action_space.n, **spec)
+        q_net.load_state_dict(ckpt['q_net'])
 
         # rename the latest and keep the backup, unless we do not train
         if config['n_steps_total'] > 0:
             backupifexists(latest_ckpt, prefix='backup')
+    else:
+        q_net = get_instance(env.action_space.n, **config['model'])
 
     # copy the target network (twice, for safety)
+    q_net.to(device)
     target_q_net = copy.deepcopy(q_net).to(device)
     update_target_model(src=q_net, dst=target_q_net)
 
@@ -316,6 +321,7 @@ with wandb.init(
             # backupifexists(latest_ckpt, prefix=f'ckpt__{n_step}')
             torch.save({
                 'q_net': q_net.state_dict(),
+                'model': config['model'],  # save model specs
             }, latest_ckpt)
             n_checkpoint_countdown = config['n_checkpoint_frequency']
 
@@ -327,6 +333,7 @@ with wandb.init(
     if experiment.name is not None:
         torch.save({
             'q_net': q_net.state_dict(),
+            'model': config['model'],  # save model specs
         }, os.path.join(path_ckpt, experiment.name + '.pt'))
 # end with
 
