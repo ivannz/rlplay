@@ -447,6 +447,8 @@ class MultiViewer:
 
 
 if __name__ == '__main__':
+    """A usage example."""
+
     import time
     import matplotlib.pyplot as plt
 
@@ -478,5 +480,31 @@ if __name__ == '__main__':
         viewer.imshow(fig)
         ax.clear()
         t0 += 1e-2
+
+    plt.close(fig)
+
+    # create a collection with two captioned viewers
+    mv = MultiViewer(resizable=False, vsync=True)
+    mv.open(view1='Sine waves', view2='TV static')
+
+    # create an uncaptioned viewer and immediately display something on it
+    mv.imshow(uncaptioned=np.random.randint(0, 255, dtype=np.uint8,
+                                            size=(128, 128, 3)))
+
+    fig, ax = plt.subplots(1, 1, figsize=(4, 3), dpi=120)
+    while mv.isopen:
+
+        ax.set_title(f'matplotlib example {t0:.1e}', fontsize='small')
+        ax.plot(t, np.sin((t0 + t) * np.pi * .2 * 35))
+        ax.plot(t, np.sin((t0 + t) * np.pi * .2 * 21))
+        ax.plot(t, np.sin((t0 + t) * np.pi * .2 * 7))
+
+        t0 += 1e-2
+
+        # use imshow to update specific viewers
+        mv.imshow(view2=np.random.randint(0, 255, dtype=np.uint8,
+                                          size=(128, 128)),
+                  view1=fig)
+        ax.clear()
 
     plt.close(fig)
