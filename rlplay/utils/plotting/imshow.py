@@ -147,11 +147,20 @@ class ImageViewer(Window):
 
             # do the lower-level physical widow resizing (exhibits some janky
             #  `animated` resizing effects)
-            self.set_size(width, height)
+            return self.set_size(width, height)  # `set_size` calls `on_resize`
 
         # update the GL viewport and the dims of the orthogonal projection
         #  see `Window.on_resize` and `Window._projection` docs.
         super().on_resize(width, height)
+
+    def set_size(self, width, height):
+        """Resize the window and adjust the gl viewport."""
+        super().set_size(width, height)
+
+        # HACK non-resizable windows require manual viewport correction
+        #  also (at least on mac) such windows are not limited to screen dims
+        if not self.resizeable:
+            super().on_resize(width, height)  # call parent's method
 
     def on_draw(self):
         """Redraw the current image."""
