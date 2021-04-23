@@ -3,7 +3,11 @@ import sys
 import pyglet
 import numpy as np
 
+from weakref import ref
+
 from random import randint
+from functools import partial
+from collections import OrderedDict
 
 from pyglet import gl
 from pyglet.image import ImageData
@@ -318,6 +322,126 @@ class ImageViewer(Window):
         # properly reshape and reorder the data
         flat = np.frombuffer(buf, dtype=np.uint8)
         return flat.reshape(height, width, n_channels)[::-1].copy()
+
+
+class MultiViewer:
+    """A managed collection of image viewers.
+
+    Parameters
+    ----------
+    resizable : bool, default=True
+        Specify whether the viewers have resizable window.
+
+    vsync : bool, default=False
+        Set the vertical retrace synchronisation.
+
+    display : str, or None
+        Uses the primary display if `None`, otherwise puts the viewer on the
+        specified display.
+    """
+
+    def __init__(self, *, scale=None, resizable=True,
+                 vsync=False, display=None):
+        self.resizable, self.vsync = resizable, vsync
+        self.scale, self.display = scale, display
+        self.viewers = OrderedDict()
+
+    def open(self, *captionless, **captioned):
+        """Open missing or reopen closed viewers."""
+        captions = {**dict.fromkeys(captionless), **captioned}
+        for label, caption in captions.items():
+            if not isinstance(label, str):
+                raise TypeError('Viewer labels must be '
+                                f'str. Got `{label}`.')
+
+            if not (caption is None or isinstance(caption, str)):
+                raise TypeError('Captions must be either `None` '
+                                f'or str. Got `{caption}`.')
+
+            # open a new viewer if one doesn't exist or has been closed
+            if label in self.viewers:
+                if self.viewers[label].isopen:
+                    continue
+
+            viewer = ImageViewer(caption=caption,
+                                 scale=self.scale, display=self.display,
+                                 resizable=self.resizable, vsync=self.vsync)
+
+            # weakref to the viewer baked into partial calls
+            viewer.push_handlers(
+                # `on_close` and `on_key_press` to activate the next viewer
+                on_close=partial(self._cycle, wr_viewer=ref(viewer)),
+                on_key_press=partial(self.on_key_press, wr_viewer=ref(viewer)),
+            )
+
+            self.viewers[label] = viewer
+
+        return self
+
+    def on_key_press(self, symbol, modifiers, *, wr_viewer):
+        """Handle `tab` to cycle through the viewers."""
+        if symbol == key.TAB:
+            self._cycle(wr_viewer)
+
+    def _cycle(self, wr_viewer):
+        """Activate the next viewer if another one gets closed."""
+
+        # the method is referenced by us and the caller
+        viewer = wr_viewer()
+        if viewer is None:
+            return
+
+        # find the next open and active viewer to activate
+        for label, vw in self.viewers.items():
+            if vw is not viewer and vw.isopen:
+                # move-to-end to prevent alternating between two viewers
+                self.viewers.move_to_end(label, last=True)
+                return vw.activate()
+
+    def close(self, *which):
+        """Close all or only the specified viewers."""
+        for label in list(which or self.viewers):
+            if label in self.viewers:
+                self.viewers[label].close()
+                del self.viewers[label]
+
+    def imshow(self, **content):
+        """Display images on the specified viewers."""
+        for label, image in content.items():
+            if label not in self.viewers:
+                self.open(label)
+
+            # do not update closed viewers: check `isopen` since a viewer
+            #  may exist in the dict, but still have been closed externally
+            if self.viewers[label].isopen:
+                self.viewers[label].imshow(image, keepdims=True)
+
+        # check if any of the updated viewers are open
+        return any(self.viewers[label].isopen for label in content)
+
+    def refresh(self, *which):
+        """Refresh all open and active viewers."""
+        labels = list(which or self.viewers)
+        for label in labels:
+            if label not in self.viewers:
+                raise KeyError(f'Viewer `{label}` does not exist.')
+            if self.viewers[label].isopen:
+                self.viewers[label].render()
+
+        return any(self.viewers[label].isopen for label in labels)
+
+    @property
+    def isopen(self):
+        """Check if at least one viewer is open and active (alias)."""
+        return any(viewer.isopen for viewer in self.viewers.values())
+
+    def __bool__(self):
+        """Check if at least one viewer is open and active."""
+        return self.isopen
+
+    def __getitem__(self, label):
+        """Get the window of the specified viewer."""
+        return self.viewers[label]
 
 
 if __name__ == '__main__':
