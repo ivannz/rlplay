@@ -159,6 +159,8 @@ class ImageViewer(Window):
         # > The window will already have the GL context, so there is no need to
         # > call `.switch_to`. The window’s `.flip` method will be called after
         # > this event, so your event handler should not.
+        # self.switch_to()
+
         # gl.glClearColor(0, 0, 0, 0)
         self.clear()
 
@@ -416,8 +418,8 @@ class MultiViewer:
             if self.viewers[label].isopen:
                 self.viewers[label].imshow(image, keepdims=True)
 
-        # check if any of the updated viewers are open
-        return any(self.viewers[label].isopen for label in content)
+        # refresh the left out viewers
+        return self.refresh(*(self.viewers.keys() - content.keys()))
 
     def refresh(self, *which):
         """Refresh all open and active viewers."""
@@ -428,7 +430,7 @@ class MultiViewer:
             if self.viewers[label].isopen:
                 self.viewers[label].render()
 
-        return any(self.viewers[label].isopen for label in labels)
+        return self.isopen
 
     @property
     def isopen(self):
