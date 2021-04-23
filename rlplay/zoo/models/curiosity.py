@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from torch.nn import Sequential
-from torch.nn import Flatten
+from torch.nn import Flatten, Identity
 from torch.nn import Conv2d, Linear
 from torch.nn import ELU, ReLU
 
@@ -25,6 +25,7 @@ class IntrinsicCuriosityModule(torch.nn.Module):
             ELU(),
             Conv2d(32, 32, 3, stride=2, padding=1, bias=True),
             ELU(),
+            Identity(),  # tap
             Flatten(1, -1),
         )
 
@@ -42,26 +43,42 @@ class IntrinsicCuriosityModule(torch.nn.Module):
 
         self.n_actions, self.n_emb_dim = n_actions, 32*3*3
 
-    def forward(self, s_t, s_tp1, a_t, *, beta=0.2):
-        # stack along batch dim, pass, then split back
-        # XXX make two independent passes is `phi` has batchnorms
-        batched = torch.cat([s_t, s_tp1], dim=0)  # batch cat
-        h_t, h_tp1 = torch.chunk(self.phi(batched), 2, dim=0)  # undo
+    def inv_dyn(self, s_t, s_tp1):
+        # join along batch dim, compute, then split
+        batched = torch.cat([s_t, s_tp1], dim=0)
+        h_t, h_tp1 = torch.chunk(self.phi(batched), 2, dim=0)  # undo cat
 
         # inverse dynamics inference
         logits = self.gee(torch.cat([h_t, h_tp1], dim=1))  # feature cat
+        return h_t, h_tp1, logits
 
-        # forward dynamics
-        e_t = F.one_hot(a_t, self.n_actions)  # XXX `nn.Embedding` maybe?
-        output = self.eff(torch.cat([h_t, e_t], dim=1))
+    def fwd_dyn(self, s_t, a_t, *, h_t=None):
+        # compute state embedding if one was not provided
+        if isinstance(s_t, torch.Tensor):
+            h_t = self.phi(s_t)  # `s_t` overrides `h_t`
+
+        # forward dynamics model
+        hat_h_tp1 = self.eff(torch.cat([
+            h_t, F.one_hot(a_t, self.n_actions)
+        ], dim=1))
+
+        return h_t, hat_h_tp1
+
+    def forward(self, s_t, s_tp1, a_t, *, beta=0.2):
+        # get the inverse and forward dynamics outputs
+        h_t, h_tp1, logits = self.inv_dyn(s_t, s_tp1)
+        h_t, hat_h_tp1 = self.fwd_dyn(None, a_t, h_t=h_t)
 
         # loss terms: cross entropy and mse
         ell_inv = F.cross_entropy(logits, a_t, reduction='mean')
+        ell_fwd = F.mse_loss(hat_h_tp1, h_tp1, reduction='mean')
 
-        ell_fwd = F.mse_loss(output, h_tp1,
-                             reduction='mean') * self.n_emb_dim
+        # beta becomes dimensionless when scaled by the output dims
+        loss = beta * ell_fwd * self.n_emb_dim + (1 - beta) * ell_inv
 
         # also return the probs (for tracking)
-        loss = beta * ell_fwd + (1 - beta) * ell_inv
-
-        return loss, F.softmax(logits.detach(), dim=-1)
+        return loss, {
+            'fwd': F.mse_loss(hat_h_tp1.detach(), h_tp1.detach(),
+                              reduction='none').sum(1),
+            'inv': F.softmax(logits.detach(), dim=1),
+        }
