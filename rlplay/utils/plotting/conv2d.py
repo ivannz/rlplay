@@ -8,13 +8,38 @@ from ..module import BaseModuleHook
 
 
 class Conv2DViewer(BaseModuleHook):
-    def __init__(self, module, activation=None, *, normalize='independent',
+    """Monitor the intermediate outputs of a module.
+
+    Parameters
+    ----------
+    module : torch.nn.Module
+        The module, intermediate outputs of which to monitor. The viewer
+        attaches itself to the structure of the module using torch's API,
+        which notifies the former of the new intermediate tensors and which
+        submodules produced it.
+
+    activation : callable, or dict of callable
+        The extra nonlinearity applied to the monitored intermediate outputs.
+
+    normalize : bool, default=True
+        Specify whether the feature/channels of the tracked tensors are to
+        be normalized individually or altogether.
+
+    tap : torch.nn.Module, an str, or a sequence
+        The layers, the outputs of which are tapped by the viewer.
+
+    aspect : pair of numbers
+        The width-height aspect ratio.
+
+    viewer : None, or MultiViewer
+        The multi-image viewer with which to display the monitored outputs.
+        A new one is created if `None`.
+    """
+    def __init__(self, module, activation=None, *, normalize=True,
                  tap=torch.nn.Conv2d, aspect=(16, 9), viewer=None):
         super().__init__()
 
-        assert normalize in ('full', 'independent', 'none')
-
-        # create own multiviewer instance
+        # create own multi-image viewer instance
         if viewer is None:
             viewer = MultiViewer()
         assert isinstance(viewer, MultiViewer)
@@ -83,11 +108,7 @@ class Conv2DViewer(BaseModuleHook):
 
         # flatten the channel and batch dims and apply normalization
         tensor = output.cpu().reshape(-1, *spatial)
-        if self.normalize != 'independent':
-            normalize = self.normalize == 'full'
-        else:
-            normalize = False
-
+        if self.normalize:
             # flatten and 0-1 normalize each image independently
             flat = tensor.flatten(1, -1).clone()
             flat = flat.sub_(flat.min(dim=-1, keepdim=True).values)
@@ -100,7 +121,7 @@ class Conv2DViewer(BaseModuleHook):
         # make a grid of images with a checkerboard placeholder
         self.feature_maps[label] = make_grid(
             tensor, aspect=self.aspect,
-            normalize=normalize).numpy()
+            normalize=not self.normalize).numpy()
 
     def __iter__(self):
         yield from self.feature_maps.items()
@@ -116,9 +137,13 @@ class Conv2DViewer(BaseModuleHook):
 
     def draw(self, *, vsync=False):
         """Draw the most recently collected outputs."""
-        self.viewers.imshow(**{
-            label: (image * 255).astype(np.uint8) for label, image in self
-        })
+        for label, image in self:
+            if label not in self.viewers:
+                # create a viewer with a proper caption
+                self.viewers.get(label, f'Feature maps of `{label}`')
+
+            # update our own viewer only
+            self.viewers.imshow(label, (image * 255).astype(np.uint8))
 
     def __exit__(self, exc_type, exc_value, traceback):
         """Draw on exit."""
@@ -127,6 +152,8 @@ class Conv2DViewer(BaseModuleHook):
 
 
 if __name__ == '__main__':
+    """A simple illustration of how the Conv2dViewer can be used."""
+
     from collections import OrderedDict
 
     module = torch.nn.Sequential(OrderedDict([
@@ -140,9 +167,18 @@ if __name__ == '__main__':
 
     print('Tapping layers with names strating with `conv_` or `block_`')
     viewer = Conv2DViewer(module, tap=('conv_', 'block_'))
+
+    # do not track the intermediates outside `with` contexts
+    viewer.toggle(False)
+
+    single = torch.randn(1, 32, 28, 28)
     while True:
-        with viewer:
-            module(torch.randn(1, 32, 28, 28))
+        with viewer:  # track this forward pass
+            module(single)  # open the viewers on the first in-context call
+
+        # the forward pass of this batch is not tracked:
+        #  the viewer is hard coded to accept single element batches only.
+        module(torch.randn(3, 32, 28, 28))
         if not viewer.isopen:
             break
 
@@ -151,5 +187,6 @@ if __name__ == '__main__':
     while True:
         with viewer:
             module(torch.randn(1, 32, 28, 28))
+
         if not viewer.isopen:
             break
