@@ -349,7 +349,7 @@ class MultiViewer:
         self.viewers = OrderedDict()
 
     def get(self, label, caption=None):
-        """Open a viewer with a specific label and optional caption."""
+        """(re-)open a viewer with a specific label and optional caption."""
         if label in self.viewers:
             if self.viewers[label].isopen:
                 return self.viewers[label]
@@ -449,6 +449,10 @@ class MultiViewer:
     def __getitem__(self, label):
         """Get the window of the specified viewer."""
         return self.viewers[label]
+
+    def __contains__(self, label):
+        """Get the window of the specified viewer."""
+        return label in self.viewers
 
 
 if __name__ == '__main__':
