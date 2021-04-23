@@ -189,7 +189,7 @@ with wandb.init(
     done = True
 
     # intermediate output viewer: use custom identity taps, instead of Conv2d
-    viewer = clsViewer(q_net, tap=torch.nn.Identity, pixel=(5, 5))
+    viewer = clsViewer(q_net, tap=torch.nn.Identity)
     viewer.toggle(False)  # inactive by default: won't collect intermediates
 
     # wandb-friendly monitor: does not affect the parameters of the wrapped env
@@ -206,7 +206,7 @@ with wandb.init(
         if done:
             # log end of episode
             n_counts = torch.bincount(
-                torch.tensor(l_episode_actions),
+                torch.tensor(l_episode_actions, dtype=torch.long),
                 minlength=env.action_space.n)
 
             # wandb reacts to nested dicts and to slashes,
