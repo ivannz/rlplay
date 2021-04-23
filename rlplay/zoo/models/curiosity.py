@@ -62,6 +62,6 @@ class IntrinsicCuriosityModule(torch.nn.Module):
                              reduction='mean') * self.n_emb_dim
 
         # also return the probs (for tracking)
-        loss = beta * ell_inv + (1 - beta) * ell_fwd
+        loss = beta * ell_fwd + (1 - beta) * ell_inv
 
         return loss, F.softmax(logits.detach(), dim=-1)
