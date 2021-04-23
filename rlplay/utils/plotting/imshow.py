@@ -348,37 +348,25 @@ class MultiViewer:
         self.scale, self.display = scale, display
         self.viewers = OrderedDict()
 
-    def open(self, *captionless, **captioned):
-        """Open missing or reopen closed viewers."""
-        captions = {**dict.fromkeys(captionless), **captioned}
-        for label, caption in captions.items():
-            if not isinstance(label, str):
-                raise TypeError('Viewer labels must be '
-                                f'str. Got `{label}`.')
+    def get(self, label, caption=None):
+        """Open a viewer with a specific label and optional caption."""
+        if label in self.viewers:
+            if self.viewers[label].isopen:
+                return self.viewers[label]
 
-            if not (caption is None or isinstance(caption, str)):
-                raise TypeError('Captions must be either `None` '
-                                f'or str. Got `{caption}`.')
+        # open a new viewer if one doesn't exist or has been closed
+        self.viewers[label] = viewer = ImageViewer(
+            caption=caption, scale=self.scale, vsync=self.vsync,
+            resizable=self.resizable, display=self.display)
 
-            # open a new viewer if one doesn't exist or has been closed
-            if label in self.viewers:
-                if self.viewers[label].isopen:
-                    continue
+        # weakref to the viewer baked into partial calls
+        viewer.push_handlers(
+            # `on_close` and `on_key_press` to activate the next viewer
+            on_close=partial(self._cycle, wr_viewer=ref(viewer)),
+            on_key_press=partial(self.on_key_press, wr_viewer=ref(viewer)),
+        )
 
-            viewer = ImageViewer(caption=caption,
-                                 scale=self.scale, display=self.display,
-                                 resizable=self.resizable, vsync=self.vsync)
-
-            # weakref to the viewer baked into partial calls
-            viewer.push_handlers(
-                # `on_close` and `on_key_press` to activate the next viewer
-                on_close=partial(self._cycle, wr_viewer=ref(viewer)),
-                on_key_press=partial(self.on_key_press, wr_viewer=ref(viewer)),
-            )
-
-            self.viewers[label] = viewer
-
-        return self
+        return viewer
 
     def on_key_press(self, symbol, modifiers, *, wr_viewer):
         """Handle `tab` to cycle through the viewers."""
@@ -400,6 +388,15 @@ class MultiViewer:
                 self.viewers.move_to_end(label, last=True)
                 return vw.activate()
 
+    def imshow(self, label, image):
+        """Display an images on the specified viewer."""
+        if label not in self.viewers:
+            self.get(label)
+
+        # do not update closed viewers: check `isopen` since a viewer
+        #  may exist in the dict, but still have been closed externally
+        return self.viewers[label].imshow(image, keepdims=True)
+
     def close(self, *which):
         """Close all or only the specified viewers."""
         for label in list(which or self.viewers):
@@ -407,28 +404,36 @@ class MultiViewer:
                 self.viewers[label].close()
                 del self.viewers[label]
 
-    def imshow(self, **content):
-        """Display images on the specified viewers."""
+    def open(self, *captionless, **captioned):
+        """Open missing or reopen closed viewers."""
+        captions = {**dict.fromkeys(captionless), **captioned}
+        for label, caption in captions.items():
+            if not isinstance(label, str):
+                raise TypeError('Viewer labels must be '
+                                f'str. Got `{label}`.')
+
+            if not (caption is None or isinstance(caption, str)):
+                raise TypeError('Captions must be either `None` '
+                                f'or str. Got `{caption}`.')
+
+            self.get(label, caption)
+
+        return self
+
+    def update(self, **content):
+        """Display content on the specified viewers and refresh the rest."""
         for label, image in content.items():
-            if label not in self.viewers:
-                self.open(label)
+            self.imshow(label, image)
 
-            # do not update closed viewers: check `isopen` since a viewer
-            #  may exist in the dict, but still have been closed externally
-            if self.viewers[label].isopen:
-                self.viewers[label].imshow(image, keepdims=True)
-
-        # refresh the left out viewers
+        # refresh the remaining out viewers
         return self.refresh(*(self.viewers.keys() - content.keys()))
 
     def refresh(self, *which):
         """Refresh all open and active viewers."""
-        labels = list(which or self.viewers)
-        for label in labels:
-            if label not in self.viewers:
-                raise KeyError(f'Viewer `{label}` does not exist.')
-            if self.viewers[label].isopen:
-                self.viewers[label].render()
+        for label in list(which or self.viewers):
+            if label in self.viewers:
+                if self.viewers[label].isopen:
+                    self.viewers[label].render()
 
         return self.isopen
 
@@ -488,8 +493,8 @@ if __name__ == '__main__':
     mv.open(view1='Sine waves', view2='TV static')
 
     # create an uncaptioned viewer and immediately display something on it
-    mv.imshow(uncaptioned=np.random.randint(0, 255, dtype=np.uint8,
-                                            size=(128, 128, 3)))
+    mv.imshow('uncaptioned',
+              np.random.randint(0, 255, dtype=np.uint8, size=(128, 128, 3)))
 
     fig, ax = plt.subplots(1, 1, figsize=(4, 3), dpi=120)
     while mv.isopen:
@@ -501,10 +506,11 @@ if __name__ == '__main__':
 
         t0 += 1e-2
 
-        # use imshow to update specific viewers
-        mv.imshow(view2=np.random.randint(0, 255, dtype=np.uint8,
-                                          size=(128, 128)),
-                  view1=fig)
+        # update specific viewers, refreshing others
+        mv.update(
+            view2=np.random.randint(0, 255, dtype=np.uint8, size=(128, 128)),
+            view1=fig,
+        )
         ax.clear()
 
     plt.close(fig)
