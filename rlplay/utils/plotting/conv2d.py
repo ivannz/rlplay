@@ -2,19 +2,25 @@ import torch
 import numpy as np
 
 from .grid import make_grid
-from .imshow import ImageViewer
+from .imshow import MultiViewer
+
 from ..module import BaseModuleHook
 
 
 class Conv2DViewer(BaseModuleHook):
     def __init__(self, module, activation=None, *, normalize='independent',
-                 tap=torch.nn.Conv2d, aspect=(16, 9), pixel=(1, 1)):
-        assert normalize in ('full', 'independent', 'none')
+                 tap=torch.nn.Conv2d, aspect=(16, 9), viewer=None):
         super().__init__()
 
-        self.feature_maps, self.viewers = {}, {}
-        self.aspect, self.pixel = aspect, pixel
-        self.normalize = normalize
+        assert normalize in ('full', 'independent', 'none')
+
+        # create own multiviewer instance
+        if viewer is None:
+            viewer = MultiViewer()
+        assert isinstance(viewer, MultiViewer)
+
+        self.feature_maps, self.viewers = {}, viewer
+        self.aspect, self.normalize = aspect, normalize
 
         # immediately register self with the module
         if not isinstance(tap, tuple):
@@ -102,25 +108,17 @@ class Conv2DViewer(BaseModuleHook):
     @property
     def isopen(self):
         """Check if any viewers are open."""
-        return any(v.isopen for v in self.viewers.values())
+        return self.viewers.isopen
 
     def close(self):
         """Close all viewers."""
-        for viewer in self.viewers.values():
-            viewer.close()
-        self.viewers.clear()
+        self.viewers.close()
 
     def draw(self, *, vsync=False):
         """Draw the most recently collected outputs."""
-        # create as many Viewers are there are convolutional layers
-        for label, image in self:
-            if label not in self.viewers:
-                self.viewers[label] = ImageViewer(
-                    caption=f'Feature maps of `{label}`',
-                    scale=self.pixel, vsync=vsync)
-
-            # update the image data
-            self.viewers[label].imshow((image * 255).astype(np.uint8))
+        self.viewers.imshow(**{
+            label: (image * 255).astype(np.uint8) for label, image in self
+        })
 
     def __exit__(self, exc_type, exc_value, traceback):
         """Draw on exit."""
@@ -141,7 +139,7 @@ if __name__ == '__main__':
     ]))
 
     print('Tapping layers with names strating with `conv_` or `block_`')
-    viewer = Conv2DViewer(module, tap=('conv_', 'block_'), pixel=(2, 2))
+    viewer = Conv2DViewer(module, tap=('conv_', 'block_'))
     while True:
         with viewer:
             module(torch.randn(1, 32, 28, 28))
