@@ -8,7 +8,7 @@ from itertools import repeat
 
 
 def apply(*objects, fn):
-    """Traverse nested containers (dict, list, or tuple) of objects.
+    """Traverse nested structured containers (dict, list, or tuple) of objects.
 
     Details
     -------
@@ -68,7 +68,7 @@ def apply(*objects, fn):
         return values
 
 
-def apply_single(main, fn):
+def apply_single(main, *, fn):
     """A version of `apply` optimized for use with one structured container.
     """
     # special sequence types must precede generic `Sequence` check
@@ -93,7 +93,7 @@ def apply_single(main, fn):
     return fn(main)
 
 
-def apply_pair(main, other, fn):
+def apply_pair(main, other, *, fn):
     """`Apply` optimized for use with paired structured containers."""
     # special sequence types must precede generic `Sequence` check
     if isinstance(main, (str, bytes)):
@@ -128,64 +128,98 @@ def apply_pair(main, other, fn):
         return values
 
 
-def dtype(obj):
-    """Get the schema of data in nested containers (list, dict, tuple)."""
-    def _dtype(obj):
-        # types are returned as is
-        if isinstance(obj, type):
-            return obj
+def getitem(container, index):
+    """Recursively get `element[index]` from a nested container."""
+    def _getitem(elem):
+        return None if elem is None else elem[index]
 
-        # special objects
-        elif isinstance(obj, (str, bytes, Number)):
-            return type(obj)
+    return apply_single(container, fn=_getitem)
+
+
+def setitem(container, index, value):
+    """Recursively set `element[index] = value` in nested container.
+
+    Details
+    -------
+    Skips elements or values that are `None`.
+    """
+    def _setitem(elem, val):
+        if elem is None or val is None:
+            return
+        elem[index] = val
+
+    apply_pair(container, value, fn=_setitem)
+
+
+def getattribute(container, name):
+    """Recursively get `element.name` from a nested container."""
+    def _getattribute(elem):
+        return getattr(elem, name, None)
+
+    return apply_single(container, fn=_getattribute)
+
+
+def method(container, name, *args, **kwargs):
+    """Call a method on elements of the structured container, which have it.
+    """
+
+    def _call(elem):
+        # return `None` if the requested method cannot be called
+        attr = getattr(elem, name, None)
+        if callable(attr):
+            return attr(*args, **kwargs)
+
+    return apply_single(container, fn=_call)
+
+
+def dtype(container):
+    """Get the data type of elements in nested structured containers."""
+    def _dtype(elem):
+        # types are returned as is
+        if isinstance(elem, type):
+            return elem
+
+        # special elements
+        elif isinstance(elem, (str, bytes, Number)):
+            return type(elem)
 
         # tensors and ndarrays get special treatment
-        elif isinstance(obj, (torch.Tensor, numpy.ndarray)):
-            return obj.dtype
+        elif isinstance(elem, (torch.Tensor, numpy.ndarray)):
+            return elem.dtype
 
-        raise TypeError(f'`{obj}` is not supported.')
+        raise TypeError(f'`{elem}` is not supported.')
 
-    return apply_single(obj, fn=_dtype)
+    return apply_single(container, fn=_dtype)
 
 
-def astype(batch, *, schema=None, device=None):
+def astype(container, *, schema=None, device=None):
     """Ensure the specified device-dtype schema on a structured container.
 
     Must be used only on structured data collated into `torch.Tensor`-s.
     """
-    def _astype(data, schema=None):
+    def _astype(elem, schema=None):
         # undefined schema means keeping `source` specs
         if schema is None:
-            return data
+            return elem
 
         # if batch is a `torch.Tensor` then we're in the base case
-        if isinstance(data, torch.Tensor):
+        if isinstance(elem, torch.Tensor):
             if isinstance(schema, torch.dtype):
-                return data.to(dtype=schema, device=device)
+                return elem.to(dtype=schema, device=device)
 
             elif not isinstance(schema, dict):
                 raise TypeError(f'`schema` for a torch.Tensor '
                                 f'must be a `dict`. Got `{schema}`.')
 
             # if the specs match the tensor, then no copy is made
-            return data.to(**{'device': device, **schema})
+            return elem.to(**{'device': device, **schema})
 
-        if isinstance(schema, numpy.ndarray):
-            return data.astype(schema)
+        if isinstance(elem, numpy.ndarray):
+            return elem.astype(schema)
 
         # schema does not apply to anything else: keep it as is
         #  Since we are called **after** `torch_collate`, all atypical cases
         #  must have already been handled there.
-        return data
+        return elem
 
-    return apply_pair(batch, schema, fn=_astype)
-
-
-def shape(obj, n_batch_dim=0):
-    """Get the schema of data in nested containers (list, dict, tuple)."""
-    def _shape(obj):
-        # types are returned as is
-        if isinstance(obj, (torch.Tensor, numpy.ndarray)):
-            return obj.shape[n_batch_dim:]
-
-    return apply_single(obj, fn=_shape)
+    return apply_pair(container, schema, fn=_astype)
