@@ -229,6 +229,8 @@ class ImageViewer(Window):
         In general matplotlib is not optimized for live redrawing, but lowering
         `figsize` and `dpi` may improve fps.
         """
+        if not self.isopen:
+            return False
 
         # use the `agg` backend directly to create RGBA arrays from figures
         # https://matplotlib.org/stable/gallery/user_interfaces/canvasagg.html
@@ -277,6 +279,9 @@ class ImageViewer(Window):
 
     def render(self):
         """One pass of the event loop: respond to events and redraw."""
+        if not self.isopen:
+            return False
+
         # ensure the proper gl context before dispatching and drawing
         self.switch_to()
 
@@ -308,6 +313,9 @@ class ImageViewer(Window):
         rendering, and may not coincide with the dims of the original image.
         Typically, they correspond to the window dims scaled by some factor.
         """
+        if not self.isopen:
+            raise RuntimeError('Cannot read color data from a closed viewer.')
+
         assert format in ('rgb', 'rgba')
         if format == 'rgb':
             format, n_channels = gl.GL_RGB, 3
