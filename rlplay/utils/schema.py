@@ -21,6 +21,11 @@ def apply(*objects, fn):
         * a object has fancy nested subcontainers of elements of type `object`
     """
     main, *others = objects
+    if not others:
+        # apply maintains the inital number of objects in every recursive call
+        #  hence if a single object has been passed, then there was only one
+        #  object in var-args to begin with. Therefore `fn` must be unary.
+        return apply_single(main, fn=fn)
 
     # special sequence types must precede generic `Sequence` check
     if isinstance(main, (str, bytes)):
@@ -54,18 +59,73 @@ def apply(*objects, fn):
 
         # replace None-s with infinitely repeated None
         others = (_none if s is None else s for s in others)
-        values = (apply(*row, fn=fn) for row in zip(main, *others))
+        values = [apply(*row, fn=fn) for row in zip(main, *others)]
         if isinstance(main, tuple):
-            # preserve named tuples
-            if hasattr(main, '_fields'):
-                # unlike tuples, they use positional args in `__init__`
-                return type(main)(*values)  # can use `._make(data)`
-
-            # demote to tuple
-            return tuple(values)
+            # use `._make` to preserve namedtuples
+            return getattr(main, '_make', tuple)(values)
 
         # demote everything else to list
-        return list(values)
+        return values
+
+
+def apply_single(main, fn):
+    """A version of `apply` optimized for use with one structured container.
+    """
+    # special sequence types must precede generic `Sequence` check
+    if isinstance(main, (str, bytes)):
+        return fn(main)
+
+    # (tuple, namedtuple, list, etc) -> list*
+    elif isinstance(main, abc.Sequence):
+        values = [apply_single(row, fn=fn) for row in main]
+        if isinstance(main, tuple):
+            # use `._make` to preserve namedtuples
+            return getattr(main, '_make', tuple)(values)
+
+        # demote everything else to list
+        return values
+
+    # (dict, OrderedDict, etc) -> dict
+    elif isinstance(main, abc.Mapping):
+        return {k: apply_single(main[k], fn=fn) for k in main.keys()}
+
+    # delegate other types to the function (int, float, etc.)
+    return fn(main)
+
+
+def apply_pair(main, other, fn):
+    """`Apply` optimized for use with paired structured containers."""
+    # special sequence types must precede generic `Sequence` check
+    if isinstance(main, (str, bytes)):
+        return fn(main, other)
+
+    # delegate other types to the function (int, float, etc.)
+    elif not isinstance(main, (abc.Sequence, abc.Mapping)):
+        return fn(main, other)
+
+    # `objects` is Iterable[Union[Sequence, Mapping]], but not `str` or `bytes`
+    # check that the current level data are objects of the same type
+    if not (other is None or isinstance(other, type(main))):
+        raise TypeError(f'`{other}` does not match type `{type(main)}`')
+
+    # (dict, OrderedDict, etc) -> dict
+    if isinstance(main, abc.Mapping):
+        # recurse and rebuild the mapping as dict (main left-joins with others)
+        return {k: apply_pair(main[k], other.get(k), fn=fn)
+                for k in main.keys()}
+
+    # (tuple, namedtuple, list, etc) -> list*
+    elif isinstance(main, abc.Sequence):
+        # check if sequences conform
+        assert len(main) == len(other)  # TypeError
+
+        values = [apply_pair(m, o, fn=fn) for m, o in zip(main, other)]
+        if isinstance(main, tuple):
+            # use `._make` to preserve namedtuples
+            return getattr(main, '_make', tuple)(values)
+
+        # demote everything else to list
+        return values
 
 
 def dtype(obj):
@@ -85,7 +145,7 @@ def dtype(obj):
 
         raise TypeError(f'`{obj}` is not supported.')
 
-    return apply(obj, fn=_dtype)
+    return apply_single(obj, fn=_dtype)
 
 
 def astype(batch, *, schema=None, device=None):
@@ -118,7 +178,7 @@ def astype(batch, *, schema=None, device=None):
         #  must have already been handled there.
         return data
 
-    return apply(batch, schema, fn=_astype)
+    return apply_pair(batch, schema, fn=_astype)
 
 
 def shape(obj, n_batch_dim=0):
@@ -128,4 +188,4 @@ def shape(obj, n_batch_dim=0):
         if isinstance(obj, (torch.Tensor, numpy.ndarray)):
             return obj.shape[n_batch_dim:]
 
-    return apply(obj, fn=_shape)
+    return apply_single(obj, fn=_shape)
