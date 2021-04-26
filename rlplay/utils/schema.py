@@ -6,6 +6,8 @@ from collections import abc
 
 from itertools import repeat
 
+# from torch.utils.data._utils.collate import default_collate as torch_collate
+
 
 def apply(*objects, fn):
     """Traverse nested structured containers (dict, list, or tuple) of objects.
@@ -223,3 +225,27 @@ def astype(container, *, schema=None, device=None):
         return elem
 
     return apply_pair(container, schema, fn=_astype)
+
+
+def empty_like(element, *leading):
+    """Empty structured storage for `element` with extra leading dimensions."""
+
+    def _empty(el):
+        if isinstance(el, torch.Tensor):
+            # forced an on-host tensor storage
+            return el.new_empty((*leading, *el.shape),
+                                device=torch.device('cpu'))
+
+        elif isinstance(el, numpy.ndarray):
+            # a numpy ndarray is kept as is
+            return numpy.empty((*leading, *el.shape), dtype=el.dtype)
+
+        elif isinstance(el, Number):
+            # numpy storage for pythonic scalar numbers
+            return numpy.empty(leading, dtype=type(el))
+
+        # use array of object as storage for strings, bytes and other stuff
+        #  this does not readily befriend torch's `default_collate`
+        return numpy.empty(leading, dtype=object)
+
+    return apply_single(element, fn=_empty)
