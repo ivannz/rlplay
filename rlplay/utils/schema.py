@@ -30,6 +30,7 @@ def apply(*objects, fn):
         return apply_single(main, fn=fn)
 
     # special sequence types must precede generic `Sequence` check
+    # XXX `abc` says that `range` and `memoryview` are also sequences
     if isinstance(main, (str, bytes)):
         return fn(*objects)
 
@@ -42,7 +43,7 @@ def apply(*objects, fn):
     if not all(o is None or isinstance(o, type(main)) for o in others):
         raise TypeError(f'`{others}` do not match type `{type(main)}`')
 
-    # (dict, OrderedDict, etc) -> dict
+    # Mapping, dict, OrderedDict, etc. -> dict
     if isinstance(main, abc.Mapping):
         # make sure main has superset of keys
         keys, _empty = main.keys(), {}
@@ -53,7 +54,8 @@ def apply(*objects, fn):
         return {k: apply(main[k], *(d.get(k) for d in others), fn=fn)
                 for k in keys}
 
-    # (tuple, namedtuple, list, etc) -> list*
+    # Sequence, tuple, etc. -> tuple, MutableSequence, list, etc. -> list
+    #  namedtuple -> namedtuple
     elif isinstance(main, abc.Sequence):
         # check if sequences conform
         length, _none = len(main), repeat(None)
@@ -62,12 +64,15 @@ def apply(*objects, fn):
         # replace None-s with infinitely repeated None
         others = (_none if s is None else s for s in others)
         values = [apply(*row, fn=fn) for row in zip(main, *others)]
-        if isinstance(main, tuple):
-            # use `._make` to preserve namedtuples
-            return getattr(main, '_make', tuple)(values)
 
-        # demote everything else to list
-        return values
+        # demote mutable (changeable) sequences to lists
+        if isinstance(main, abc.MutableSequence):
+            return values
+
+        # ... and immutable to tuple, keeping in mind namedtuples
+        # XXX telling a namedtuple from anything else by whether it
+        #  has `._make` is as reliable as using `_fields`.
+        return getattr(main, '_make', tuple)(values)
 
 
 def apply_single(main, *, fn):
@@ -77,21 +82,21 @@ def apply_single(main, *, fn):
     if isinstance(main, (str, bytes)):
         return fn(main)
 
-    # (tuple, namedtuple, list, etc) -> list*
+    # any Sequence is regressed to either a list or a tuple
     elif isinstance(main, abc.Sequence):
         values = [apply_single(row, fn=fn) for row in main]
-        if isinstance(main, tuple):
-            # use `._make` to preserve namedtuples
-            return getattr(main, '_make', tuple)(values)
+        # demote mutable sequences to lists
+        if isinstance(main, abc.MutableSequence):
+            return values
 
-        # demote everything else to list
-        return values
+        #  ... and immutable to tuple, keeping in mind namedtuples
+        return getattr(main, '_make', tuple)(values)
 
-    # (dict, OrderedDict, etc) -> dict
+    # all Mapping-s are devolved into dicts
     elif isinstance(main, abc.Mapping):
+        # recurse and rebuild any mapping as dict
         return {k: apply_single(main[k], fn=fn) for k in main.keys()}
 
-    # delegate other types to the function (int, float, etc.)
     return fn(main)
 
 
@@ -122,12 +127,12 @@ def apply_pair(main, other, *, fn):
         assert len(main) == len(other)  # TypeError
 
         values = [apply_pair(m, o, fn=fn) for m, o in zip(main, other)]
-        if isinstance(main, tuple):
-            # use `._make` to preserve namedtuples
-            return getattr(main, '_make', tuple)(values)
+        # demote mutable sequences to lists
+        if isinstance(main, abc.MutableSequence):
+            return values
 
-        # demote everything else to list
-        return values
+        # ... and immutable to tuple, keeping in mind special namedtuples
+        return getattr(main, '_make', tuple)(values)
 
 
 def getitem(container, index):
