@@ -117,14 +117,19 @@ def apply_pair(main, other, *, fn):
 
     # (dict, OrderedDict, etc) -> dict
     if isinstance(main, abc.Mapping):
+        other = {} if other is None else other
+
         # recurse and rebuild the mapping as dict (main left-joins with others)
         return {k: apply_pair(main[k], other.get(k), fn=fn)
                 for k in main.keys()}
 
     # (tuple, namedtuple, list, etc) -> list*
     elif isinstance(main, abc.Sequence):
-        # check if sequences conform
-        assert len(main) == len(other)  # TypeError
+        if other is None:
+            other = repeat(None)
+        else:
+            # check if sequences conform
+            assert len(main) == len(other)  # TypeError
 
         values = [apply_pair(m, o, fn=fn) for m, o in zip(main, other)]
         # demote mutable sequences to lists
