@@ -1,4 +1,5 @@
 import sys
+import traceback
 
 import cloudpickle
 
@@ -131,11 +132,12 @@ class vecEnvWorker:
             while self.dispatch():
                 self._barrier.wait()
 
-        # preclude the exception from bubbling up higher, and instead
-        #  send it to the parent process through as queue
+        # preclude the exception from bubbling up higher, and
+        #  send it to the parent process through a queue instead.
         except Exception:
             typ, val, tb = sys.exc_info()
-            self._errors.put((self.index, self._process.name, typ, val))
+            msg = "".join(traceback.format_exception(typ, val, tb))
+            self._errors.put((self.index, self._process.name, typ, msg))
 
         except KeyboardInterrupt:
             pass
@@ -289,8 +291,8 @@ class vecEnv(object):
 
         # re-raise any thrown exceptions
         if not self._errors.empty():
-            index, name, typ, val = self._errors.get()
-            raise val  # typ(index, name, val) from val
+            index, name, typ, msg = self._errors.get()
+            raise typ(f'`{typ.__name__}` in `{name}` idx={index}.\n{msg}')
 
         elif not ready:
             raise TimeoutError
@@ -366,7 +368,7 @@ if __name__ == '__main__':
 
     vec = vecEnv([
         lambda: WrappedRandomDiscoMaze(10, 10, field=(2, 2))
-        for _ in range(32)
+        for _ in range(4)
     ], method='spawn', timeout=30)
 
     # from rlplay.utils.plotting.imshow import ImageViewer
