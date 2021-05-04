@@ -1,3 +1,7 @@
+"""Apply patches to gym's rendering utilities that address handling of GUI
+events and open GL context initialization. Also enhances gym's ImageViewer
+with zoom in/out controls and proper window GUI handling.
+"""
 import importlib
 
 from ..plotting.imshow import get_display, ImageViewer
@@ -45,20 +49,39 @@ class SimpleImageViewer(object):
 
 
 def patch_Viewer_render():
-    # import the lib into the global namespace
+    # import the lib into the global namespace, and ensure proper gl context
     rendering = importlib.import_module('gym.envs.classic_control.rendering')
-    rendering.Viewer.orig_render = rendering.Viewer.render
+    rendering.Viewer.unpatched_render = rendering.Viewer.render
 
     def render(self, return_rgb_array=False):
-        # pyglet docs for `Window` state that the porper OpenGL context must
-        # be activated with `.switch_to` before rendering. This includes
-        # calls to `.clear`, the docs of which require the current gl context.
+        # pyglet docs for `Window` state that the proper OpenGL context must
+        # be activated with `.switch_to` before rendering. This includes calls
+        # to `.clear`, the docs of which require the current gl context.
         self.window.switch_to()  # ensure the context
 
-        return rendering.Viewer.orig_render(
-            self, return_rgb_array=return_rgb_array)
+        return self.unpatched_render(return_rgb_array=return_rgb_array)
 
     rendering.Viewer.render = render
+
+
+def patch_Viewer_on_close():
+    # import the lib into the global namespace, and patch on-close handlers
+    rendering = importlib.import_module('gym.envs.classic_control.rendering')
+
+    # we reference the original method, since render's __init__ overwrties it
+    rendering.Viewer.pyglet_on_close = staticmethod(
+        rendering.pyglet.window.Window.on_close)
+
+    rendering.Viewer.unpatched_on_close = \
+        rendering.Viewer.window_closed_by_user
+
+    def window_closed_by_user(self):
+        """Patched handler that correctly handles GUI close event."""
+        self.unpatched_on_close()
+        self.pyglet_on_close(self.window)
+        self.window.close()
+
+    rendering.Viewer.window_closed_by_user = window_closed_by_user
 
 
 def patch_SimpleImageViewer():
@@ -68,4 +91,5 @@ def patch_SimpleImageViewer():
 
 
 patch_Viewer_render()
+patch_Viewer_on_close()
 patch_SimpleImageViewer()
