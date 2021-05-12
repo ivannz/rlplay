@@ -240,6 +240,15 @@ with wandb.init(
             if render:
                 env.render('human')
 
+            # the value function estimate at the initial state (after reset)
+            with torch.no_grad():
+                state_.copy_(torch.from_numpy(state))  # copy_ also broadcasts
+                q_values = q_net(state_)
+
+            experiment.log({
+                'f_vfn_init': float(q_values.max(dim=-1).values.squeeze(0)),
+            }, step=n_step, commit=False)
+
         # epsilon-greedy tracks sgd updates
         epsilon_ = epsilon_schedule(n_qnet_updates)
 
