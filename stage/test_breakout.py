@@ -9,7 +9,7 @@ import numpy as np
 
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
-from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLive
+from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLife
 
 from rlplay.utils import get_instance
 
@@ -121,7 +121,7 @@ def rollout(env, module, *, replay=None, conv=None, fig=None):
 # an instance of atari Breakout-v4
 env = gym.make('BreakoutNoFrameskip-v4')
 env = RandomNullopsOnReset(env, max_nullops=30)
-# env = TerminateOnLostLive(env)  # messes up the randomness of ALE
+# env = TerminateOnLostLife(env)  # messes up the randomness of ALE
 env = AtariObservation(env, shape=(84, 84))
 env = ToTensor(env)
 env = FrameSkip(env, n_frames=4, kind='max')

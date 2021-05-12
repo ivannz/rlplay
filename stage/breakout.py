@@ -17,7 +17,7 @@ from rlplay.utils.schema import astype
 
 from rlplay.utils import ToTensor
 from rlplay.utils import AtariObservation, ObservationQueue, FrameSkip
-from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLive
+from rlplay.utils import RandomNullopsOnReset, TerminateOnLostLife
 # from rlplay.zoo.models import BreakoutQNet
 
 from rlplay.utils import get_instance  # yep, this one, again -_-
@@ -133,7 +133,7 @@ with wandb.init(
     env = gym.make('BreakoutNoFrameskip-v4')
     env = RandomNullopsOnReset(env, max_nullops=config['max_nullops'])
     if config['terminate_on_loss_of_life']:
-        env = TerminateOnLostLive(env)
+        env = TerminateOnLostLife(env)
     env = AtariObservation(env, shape=config['observation_shape'])
     env = ToTensor(env)
     env = FrameSkip(env, n_frames=config['n_frame_skip'], kind='max')
