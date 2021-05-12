@@ -122,32 +122,35 @@ class TerminateOnLostLife(Wrapper):
     """Mark observations which caused a lost life as terminal."""
     def __init__(self, env, *, nullop=0):
         super().__init__(env)
-        self.nullop = nullop
+        self.nullop, self._done = nullop, True
 
     @property
     def ale(self):
         return self.env.unwrapped.ale
 
     def step(self, action):
+        # is the env has `terminated` then a true `reset` is needed
         obs, reward, done, info = self.env.step(action)
-        self._gameover = done
+        self._done = done
 
-        # detect loss-of-life: wait for actual game over on no lives remaining
-        current = self.ale.lives()
-        done = done or (0 < current < self.lives)
-        self.lives = current
+        # terminate if ale reports less lives than were observed upon last step
+        n_lives = self.ale.lives()
+        done = done or n_lives < self.lives_remaining
+        self.lives_remaining = n_lives
 
         return obs, reward, done, info
 
     def reset(self, **kwargs):
-        # reset on game over, otherwise just skip one step
-        if self._gameover:
+        # true `reset` on game over, otherwise skip one step
+        if self._done:
+            self._done = False
             obs = self.env.reset(**kwargs)
 
         else:
             obs, _, _, _ = self.env.step(self.nullop)
 
-        self.lives = self.ale.lives()
+        # record the number of lives remaining
+        self.lives_remaining = self.ale.lives()
         return obs
 
 
