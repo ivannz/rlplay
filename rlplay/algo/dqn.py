@@ -4,7 +4,8 @@ from torch.nn.functional import smooth_l1_loss
 
 
 @torch.enable_grad()
-def loss(batch, *, module, target, gamma=0.95, double=True, weights=None):
+def loss(batch, *, module, target, gamma=0.95, double=True,
+         weights=None, loss=smooth_l1_loss):
     r"""Compute the Double-DQN loss.
 
     Parameters
@@ -34,6 +35,12 @@ def loss(batch, *, module, target, gamma=0.95, double=True, weights=None):
     weights : torch.Tensor or None
         The weight associated with each transition in the batch. Assumed uniform
         if `None`.
+
+    loss : callable, default=smooth_l1_loss
+        The loss function with signature `fn(input, target, *, reduction)`,
+        e.g. `F.mse_loss` for MSE loss or `F.smooth_l1_loss` for huber loss
+        from `import torch.nn.functional as F`.
+
 
     Details
     -------
@@ -120,8 +127,8 @@ def loss(batch, *, module, target, gamma=0.95, double=True, weights=None):
 
     # the (weighted) td-error loss
     if weights is None:
-        loss = smooth_l1_loss(q_replay, q_value, reduction='mean')
-        return loss, {'td_error': td_error}
+        value = loss(q_replay, q_value, reduction='mean')
+        return value, {'td_error': td_error}
 
-    values = smooth_l1_loss(q_replay, q_value, reduction='none')
+    values = loss(q_replay, q_value, reduction='none')
     return weights.mul(values).mean(), {'td_error': td_error}
