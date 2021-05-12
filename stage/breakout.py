@@ -7,6 +7,7 @@ import wandb
 import gym
 import torch
 
+import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 
 from rlplay.algo import dqn
@@ -108,6 +109,7 @@ config = dict(
     clip_grad_norm=0.0,
     clip_rewards=0.,
     clip_td_error=0.,
+    loss_fn='smooth_l1_loss',  # the loss function to use in DQN
 )
 
 # the device
@@ -120,6 +122,17 @@ with wandb.init(
          mode=wandb_mode, dir=root) as experiment:
 
     config = experiment.config
+
+    # get the loss function for DQN
+    # XXX should we use? "<class 'torch.nn.functional.mse_loss'>"
+    if config['loss_fn'] == 'smooth_l1_loss':
+        loss_fn = F.smooth_l1_loss
+
+    elif config['loss_fn'] == 'mse_loss':
+        loss_fn = F.mse_loss
+
+    else:
+        raise ValueError(f'Unrecognized loss function {config["loss_fn"]}.')
 
     # dtype schema for iterating over the buffer
     schema = dict(state=torch.float, action=torch.long, reward=torch.float,
@@ -289,7 +302,8 @@ with wandb.init(
 
             loss, info = dqn.loss(batch, gamma=config['gamma'],
                                   module=q_net, target=target_q_net,
-                                  double=config['double'], weights=weight)
+                                  double=config['double'], weights=weight,
+                                  loss=loss_fn)
 
             # sgd step
             optim.zero_grad()
