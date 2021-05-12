@@ -118,23 +118,35 @@ class FrameSkip(Wrapper):
         return obs, sum(reward), any(done), info
 
 
-class TerminateOnLostLive(Wrapper):
+class TerminateOnLostLife(Wrapper):
+    """Mark observations which caused a lost life as terminal."""
+    def __init__(self, env, *, nullop=0):
+        super().__init__(env)
+        self.nullop = nullop
+
     @property
     def ale(self):
         return self.env.unwrapped.ale
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
+        self._gameover = done
 
-        # detect loss-of-life
+        # detect loss-of-life: wait for actual game over on no lives remaining
         current = self.ale.lives()
-        done = done or current < self.lives
+        done = done or (0 < current < self.lives)
         self.lives = current
 
         return obs, reward, done, info
 
     def reset(self, **kwargs):
-        obs = self.env.reset(**kwargs)
+        # reset on game over, otherwise just skip one step
+        if self._gameover:
+            obs = self.env.reset(**kwargs)
+
+        else:
+            obs, _, _, _ = self.env.step(self.nullop)
+
         self.lives = self.ale.lives()
         return obs
 
