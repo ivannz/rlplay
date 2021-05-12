@@ -1,11 +1,11 @@
 import torch
 
-from torch.nn.functional import smooth_l1_loss
+from torch.nn.functional import mse_loss
 
 
 @torch.enable_grad()
 def loss(batch, *, module, target, gamma=0.95, double=True,
-         weights=None, loss=smooth_l1_loss):
+         weights=None, loss=mse_loss):
     r"""Compute the Double-DQN loss.
 
     Parameters
@@ -36,7 +36,7 @@ def loss(batch, *, module, target, gamma=0.95, double=True,
         The weight associated with each transition in the batch. Assumed uniform
         if `None`.
 
-    loss : callable, default=smooth_l1_loss
+    loss : callable, default=mse_loss
         The loss function with signature `fn(input, target, *, reduction)`,
         e.g. `F.mse_loss` for MSE loss or `F.smooth_l1_loss` for huber loss
         from `import torch.nn.functional as F`.
