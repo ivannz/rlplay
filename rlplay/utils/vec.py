@@ -12,16 +12,12 @@ from multiprocessing import TimeoutError
 from gym.spaces import Space
 from gym.vector.utils import batch_space
 
-from rlplay.utils.schema import apply_single
-from rlplay.utils.schema import getitem, setitem
-
-import gym
-# fix gym's stellar rendering
-import rlplay.utils.integration.gym  # noqa: F401
-# patch and register Dict and Tuple spaces as containers in abc
-import rlplay.utils.integration.gym_spaces  # noqa: F401
-
 from collections import namedtuple
+
+from .schema import apply_single, getitem, setitem
+# from .schema import infer_dtype, check_dtype, rebuild
+# patch and register Dict and Tuple spaces as containers in abc
+from .integration import gym_spaces as _  # noqa: F401
 
 
 Endpoint = namedtuple('Endpoint', ['rx', 'tx'])
@@ -363,6 +359,9 @@ class vecEnv(object):
 
 
 if __name__ == '__main__':
+    import gym
+    import rlplay.utils.integration.gym  # noqa: F401  # fix gym's rendering
+
     import tqdm
 
     from rlplay.utils.wrappers import ToTensor, ChannelFirst, TerminateOnLostLife
