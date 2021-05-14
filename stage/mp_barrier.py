@@ -15,8 +15,9 @@ from gym.vector.utils import batch_space
 from rlplay.utils.schema import apply_single
 from rlplay.utils.schema import getitem, setitem
 
-# fix gyms stellar rendering
-# import rlplay.utils.integration.gym  # noqa: F401
+import gym
+# fix gym's stellar rendering
+import rlplay.utils.integration.gym  # noqa: F401
 # patch and register Dict and Tuple spaces as containers in abc
 import rlplay.utils.integration.gym_spaces  # noqa: F401
 
@@ -186,15 +187,26 @@ class vecEnvWorker:
             return True
 
         elif name == 'step':
+            # s_{t+1}, r_{t+1} \sim p(s, r \mid s_t, a_t)
+            #  a_t = buf_act[i]
+
             # self.sem_act.acquire()  # wait for a ready action
-            #  we-re synced becausewere unblocked by the `.recv` above
+            #  we-re synced because were unblocked by the `rx.recv()` above
             obs, rew, done, info = attr(getitem(self.buf_act, self.index))
+
+            # done indicates that $s_{t+1}$ (`obs`) is terminal and thus
+            #  its $v(s_{t+1})$ (present value of the reward flow) is zero
+            if done:
+                obs = self.env.reset()
+
+            # record buf_obs[i] = $s_{t+1}$ if not `done` else $s_0$
             setitem(self.buf_obs, self.index, obs)
+
             # self.sem_obs.release()  # announce ready observation
             self.comm.tx.send((None, rew, done, info))
             return True
 
-        # get the attribute and call it if the data
+        # get the attribute and call it if the command supplied `data`
         args, kwargs = (), {}
         if data:
             # the last element is expected to be a kwarg dict
@@ -214,6 +226,7 @@ class vecEnv(object):
         ctx = mp  # .get_context(method or 'forkserver')
 
         # poll an environment for its specs
+        # XXX what if the environments are different?
         env = envs[0]()
         self.observation_space = batch_space(env.observation_space, len(envs))
         self.action_space = batch_space(env.action_space, len(envs))
@@ -352,7 +365,7 @@ class vecEnv(object):
 if __name__ == '__main__':
     import tqdm
 
-    from rlplay.utils.wrappers import ToTensor, ChannelFirst
+    from rlplay.utils.wrappers import ToTensor, ChannelFirst, TerminateOnLostLife
     from gym_discomaze import RandomDiscoMaze
     # from gym_discomaze.ext import RandomDiscoMazeWithPosition as RandomDiscoMaze
     from functools import wraps
@@ -362,9 +375,9 @@ if __name__ == '__main__':
     class WrappedRandomDiscoMaze:
         @wraps(RandomDiscoMaze.__init__)
         def __new__(cls, *args, **kwargs):
-            return ToTensor(ChannelFirst(RandomDiscoMaze(*args, **kwargs)))
-            # return RandomDiscoMaze(*args, **kwargs)
-            # return gym.make('BreakoutNoFrameskip-v4')
+            # return ToTensor(ChannelFirst(RandomDiscoMaze(*args, **kwargs)))
+            # # return RandomDiscoMaze(*args, **kwargs)
+            return TerminateOnLostLife(gym.make('BreakoutNoFrameskip-v4'))
 
     vec = vecEnv([
         lambda: WrappedRandomDiscoMaze(10, 10, field=(2, 2))
