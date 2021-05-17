@@ -1,4 +1,5 @@
 import sys
+import signal
 import traceback
 
 import cloudpickle
@@ -107,6 +108,11 @@ class vecEnvWorker:
         return cls(index, spawner, our, their, shared, barrier, errors).run()
 
     def __init__(self, index, factory, our, their, shared, barrier, errors):
+        if their is not None:
+            # close unused ends of the pipes
+            their.tx.close()
+            their.rx.close()
+
         # get our process
         self._process = mp.current_process()
 
@@ -119,8 +125,6 @@ class vecEnvWorker:
         # our index in shared memory and the environment factory
         self.index, self.factory = index, factory
 
-        their.tx.close()  # close the write end of their pipe
-
     def run(self):
         try:
             self.startup()
@@ -129,26 +133,35 @@ class vecEnvWorker:
             while self.dispatch():
                 self._barrier.wait()
 
-        # preclude the exception from bubbling up higher, and
-        #  send it to the parent process through a queue instead.
+        # another worker broke down the barrier due to an unhandled exception
+        except BrokenBarrierError:
+            pass
+
+        # preclude the exception from bubbling up higher, and send it to
+        #  the parent process through a queue instead, just before breaking
+        #  down the barrier for all parties.
         except Exception:
             typ, val, tb = sys.exc_info()
             msg = "".join(traceback.format_exception(typ, val, tb))
             self._errors.put((self.index, self._process.name, typ, msg))
 
-        except KeyboardInterrupt:
-            pass
+            self._barrier.abort()
 
         finally:
             self.shutdown()
-            self._barrier.wait()
 
     def startup(self):
+        # `KeyboardInterrupt` is ignored, since it is issued through the
+        #  parent process anyway.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        # prepare the environment and shared memory
         self.env = self.factory()
         self.buf_obs, self.buf_act = from_shared(self.shared)
 
     def shutdown(self):
         self.comm.tx.close()
+        self.comm.rx.close()
         self.env.close()
 
     def dispatch(self):
@@ -158,7 +171,7 @@ class vecEnvWorker:
 
         # if the request pipe (its write endpoint) is closed, then
         #  this means that the parent process wants us to shut down.
-        except (OSError, EOFError):
+        except EOFError:
             return False
 
         if name is None:
@@ -242,26 +255,37 @@ class vecEnv(object):
         # self.sem_act, self.sem_obs = ctx.Semaphore(0), ctx.Semaphore(0)
 
         # spawn a worker processes for each environment
-        state, self._closed, self._errors = [], False, ctx.Queue()
+        state, self._errors = [], ctx.Queue()
         for j, env in enumerate(envs):
-            # Create a unidirectional pipes, and connect them in `crossover`
-            #  mode between us and a worker. `ut_rx` is the `us-them read end`
-            #  while `tu_tx` is the `them-us write end`. This makes sure that
-            #  in rare occasions we or the worker read (`.recv`) back own just
-            #  issued message (`.send`).
+            # Create unidirectional (non-duplex) pipes, and connect them in
+            # `crossover` mode between us and them (the worker). This set-up
+            #  avoids rare occasions where the main process or the worker read
+            #  back their own just issued message.
             ut_rx, ut_tx = ctx.Pipe(duplex=False)
             tu_rx, tu_tx = ctx.Pipe(duplex=False)
-            # XXX pipes are commonly implemented through file descriptors,
-            #  which imposes a limit on their max number.
+
+            # The connection end points have the following meanigs:
+            # * `ut` and `tu` stand for `us-them` and `them-us`, respectively;
+            # * [their] `ut_rx` (read) and `tu_tx` (write) ends are used by the
+            #   worker to receive signals and yield results, respectively;
+            # * [our] `ut_tx` (write) and `tu_rx` (read) ends are used by the
+            #   main process to issue commands and read back responses.
             our, their = Endpoint(tu_rx, ut_tx), Endpoint(ut_rx, tu_tx)
 
-            p = ctx.Process(  # swap their-our toe achieve crossover
+            # crossover handles: share the us-them rx and them-us tx ends
+            p = ctx.Process(
                 args=(j, CloudpickleSpawner(env), their, our, self.shared),
                 kwargs=dict(errors=self._errors, barrier=self.finished),
                 target=vecEnvWorker.target, daemon=True,
             )
             p.start()
-            their.tx.close()  # close the write end of their pipe
+
+            # close handles unused by us: them-us tx (write), us-them rx (read)
+            # XXX pipes and connections are commonly implemented through file
+            # descriptors, which imposes a limit on their max number. Also
+            # connections are closed when garbage collected (`__del__`).
+            their.tx.close()  # tu_tx
+            their.rx.close()  # ut_rx
 
             state.append((p, our))
 
@@ -273,15 +297,15 @@ class vecEnv(object):
         self._wait()
 
     @property
-    def closed(self):
-        return self._closed
+    def is_alive(self):
+        return all(p.is_alive() for p in self.processes)
 
     def __len__(self):
         return len(self.processes)
 
     def _wait(self, timeout=None):
         """Wait until all workers have processed the request."""
-        if self._closed:
+        if not self.is_alive:
             return self
 
         # `Event` needs `.clear` immediately after successful `.wait`. This
@@ -289,43 +313,28 @@ class vecEnv(object):
         #  data due to very fast workers, that mange to pass a new barrier
         #  between `.wait` and `.clear()`. We could've used a bounded
         #  semaphore but waiting at a common barrier is much cheaper.
+        exception = None
         try:
             # block until a complete result is available (or timeout)
             self.finished.wait()  # timeout or self.timeout)
-            ready = True
 
         except BrokenBarrierError:
-            ready = False
-            # raise TimeoutError from None
+            exception = TimeoutError
+
+        finally:
+            if not self._errors.empty():
+                index, name, typ, msg = self._errors.get()
+                exception = typ(f'`{typ.__name__}` in `{name}` idx={index}.\n{msg}')
 
         # re-raise any thrown exceptions
-        if not self._errors.empty():
-            index, name, typ, msg = self._errors.get()
-            raise typ(f'`{typ.__name__}` in `{name}` idx={index}.\n{msg}')
-
-        elif not ready:
-            raise TimeoutError
+        if exception is not None:
+            self.__del__()
+            raise exception from None
 
         return self
 
-    def close(self):
-        if self._closed:
-            return
-
-        # no need to issue close, since workers shutdown on closed pipe
-        # self._send('close')._wait()
-        self._send(None)
-        for comm in self.comm:
-            comm.tx.close()
-        self._wait()
-
-        for process in self.processes:
-            process.join()
-
     def _send(self, request, *args, **kwargs):
         """Send a request through them-us pipe."""
-        assert not self._closed
-
         for comm in self.comm:
             comm.tx.send((request, *args, kwargs))
 
@@ -335,6 +344,22 @@ class vecEnv(object):
         """Get a response from us-them pipe."""
         # serially read from the input endpoints
         return [comm.rx.recv() for comm in self.comm]
+
+    def __del__(self):
+        """Shutdown all workers."""
+        # workers shutdown if their `rx` end is closed, which is why we close
+        # our `tx` end, instead of sending an explicit `close` signal. Also we
+        # close our `rx` end of their `tx` connection, because why not.
+        # self._send(None)
+        for comm in self.comm:
+            comm.tx.close()
+            comm.rx.close()
+
+        # shutdown event is `special`, because workers do not explicitly sync
+        #  afterwards, and just terminate (which is an implicit sync).
+        # self._wait()
+        for process in self.processes:
+            process.join()
 
     def reset(self, **kwargs):
         self._send('reset', **kwargs)  # action is not required
@@ -356,6 +381,23 @@ class vecEnv(object):
         self._send('render', mode=mode)
         self._wait(timeout)
         return any(self._recv())
+
+    def close(self):
+        self.__del__()
+
+    def seed(self, seeds):
+        """Seed the environment of each worker."""
+        assert len(seeds) == len(self)
+
+        for comm, seed in zip(self.comm, seeds):
+            comm.tx.send(('seed', seed))
+
+        return self._wait()._recv()
+
+    def broadcast(self, request, *args, **kwargs):
+        """Broadcast a general command to all workers."""
+        self._send(request, *args, kwargs)
+        return self._wait()._recv()
 
 
 if __name__ == '__main__':
