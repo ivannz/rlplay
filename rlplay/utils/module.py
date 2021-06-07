@@ -1,4 +1,4 @@
-from .schema import dtype
+from .schema.tools import gettype
 
 
 class BaseModuleHook:
@@ -31,12 +31,12 @@ class BaseModuleHook:
         assert module in self.hooks
 
         if self.n_inputs[module] is None:
-            self.n_inputs[module] = dtype(inputs)
-        assert self.n_inputs[module] == dtype(inputs)
+            self.n_inputs[module] = gettype(inputs)
+        assert self.n_inputs[module] == gettype(inputs)
 
         if self.n_outputs[module] is None:
-            self.n_outputs[module] = dtype(inputs)
-        assert self.n_outputs[module] == dtype(inputs)
+            self.n_outputs[module] = gettype(inputs)
+        assert self.n_outputs[module] == gettype(inputs)
 
     def _hook(self, module, inputs, output):
         if self.enabled:
