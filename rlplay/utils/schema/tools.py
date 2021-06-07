@@ -52,7 +52,7 @@ def method(container, name, *args, **kwargs):
     return apply_single(container, fn=_call)
 
 
-def dtype(container):
+def gettype(container):
     """Get the data type of elements in nested structured containers."""
     def _dtype(elem):
         # types are returned as is
