@@ -162,7 +162,7 @@ def numpify(obj, *leading, copy=False, ctx=None):
 
     def _as_array(x):
         # alias torch tensors, keep ndarrays intact, create new from scalars
-        npy = x.numpy() if isinstance(x, torch.Tensor) else numpy.asarray(x)
+        npy = numpy.asarray(x)
         if not copy and ctx is None and is_broadcast:
             if leading:
                 npy = npy.reshape(leading + npy.shape)
