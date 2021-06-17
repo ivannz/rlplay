@@ -69,7 +69,7 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
     `shared=False` the nested container's tensors will be correctly shared
     between processes. However any numpy ndarray aliases created prior to
     sharing will still reference the swapped-out invalidated torch's storage.
-    So it is advisable to preemptively torchify the data with in shared memory.
+    So it is advisable to preemptively torchify the data within shared memory.
     """
     if pinned and shared:
         raise ValueError('`pinned` and `shared` flags are mutually exclusive.')
