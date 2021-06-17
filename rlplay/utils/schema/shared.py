@@ -61,6 +61,15 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
     aliasing between torch tensors and numpy arrays is IMPOSSIBLE.
 
     As of 1.8 torch doesn't support string data types.
+
+    Warning
+    -------
+    Torch automatically detects if a tensor is being shared and hot-swaps
+    correctly allocated shared storage. Hence even when torchified with
+    `shared=False` the nested container's tensors will be correctly shared
+    between processes. However any numpy ndarray aliases created prior to
+    sharing will still reference the swapped-out invalidated torch's storage.
+    So it is advisable to preemptively torchify the data with in shared memory.
     """
     if pinned and shared:
         raise ValueError('`pinned` and `shared` flags are mutually exclusive.')
@@ -272,14 +281,3 @@ class PickleShared:
             raise TypeError(f'Unrecognized type `{type(sh)}`')
 
         return apply_single(struct, fn=_build)
-
-
-# XXX `torchify` blocks `.base` tracking in `numpy.ndarray`, so we won't
-#  be able to obtain the real underlying buffer to see if it is shared.
-# >>> data = {'foo': True, 'bar': np.arange(10), 'baz': {'a': +1., 'z': -1.}}
-# >>> pyt = torchify(data, 10, shared=True)
-# >>> npy = numpify(pyt)  # makes an alias
-# >>> # set up two processes with two barriers.
-# >>> apply_single(npy, fn=lambda x: x.__setitem__(slice(None), 0))
-# >>> pyt_two = torchify(npy)
-# >>> assert pyt_two == pyt
