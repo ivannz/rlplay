@@ -10,18 +10,26 @@ import multiprocessing as mp
 from threading import BrokenBarrierError
 from multiprocessing import TimeoutError
 
+from gym import Env
 from gym.spaces import Space
 from gym.vector.utils import batch_space
 
 from collections import namedtuple
 
-from .schema import apply_single, getitem, setitem
-# from .schema import infer_dtype, check_dtype, rebuild
+from .schema import apply_single
+from .schema.shared import PickleShared
+from .schema.tools import getitem, setitem
+
+# from .schema.dtype import infer, check, rebuild
 # patch and register Dict and Tuple spaces as containers in abc
 from .integration import gym_spaces as _  # noqa: F401
 
 
 Endpoint = namedtuple('Endpoint', ['rx', 'tx'])
+
+
+class TerminateInterrupt(RuntimeError):
+    pass
 
 
 class CloudpickleSpawner:
@@ -38,40 +46,6 @@ class CloudpickleSpawner:
         self.__dict__.update(cloudpickle.loads(data))
 
 
-class SharedArray:
-    """Holder for shape, dtype and the underlying shared memory buffer."""
-    __slots__ = 'shm', 'dtype', 'shape'
-
-    def __repr__(self):
-        text = repr(self.shape)[1:-1] + ', dtype=' + str(self.dtype)
-        return type(self).__name__ + '(' + text + ')'
-
-    def __init__(self, shm, dtype, shape):
-        self.dtype, self.shape = dtype, shape
-        self.shm = shm
-
-    @classmethod
-    def alloc(cls, shape, dtype, ctx=mp):
-        from ctypes import c_byte
-
-        # let numpy handle the input dtype specs (`dtype.itemsize` is in bytes)
-        dtype = np.dtype(dtype)
-        n_bytes = int(np.prod(shape) * dtype.itemsize)
-
-        # numpy's dtype typecodes mostly coincide with codes from std::array
-        #  but instead we allocate `nbytes` sized storage of `c_byte`
-        return cls(ctx.RawArray(c_byte, n_bytes), dtype, shape)
-
-    def numpy(self):
-        # build a numpy array in the shared  memory
-        return np.ndarray(self.shape, buffer=self.shm, dtype=self.dtype)
-
-    @classmethod
-    def from_numpy(cls, array, *leading, ctx=mp):
-        shape = *leading, *array.shape
-        return cls.alloc(shape, dtype=array.dtype, ctx=ctx)
-
-
 def from_space(space, *leading, ctx=mp):
     """Make shared objects from nested gym spaces."""
     # spaces.MultiDiscrete
@@ -86,8 +60,8 @@ def from_space(space, *leading, ctx=mp):
     #   a real-valued n-dim vector space optionaly bounded by a box
     def _from_space(el):
         if isinstance(el, Space):
-            return SharedArray.alloc(shape=leading + el.shape,
-                                     dtype=el.dtype, ctx=ctx)
+            return PickleShared.empty(leading + el.shape,
+                                      dtype=el.dtype, ctx=ctx)
         raise TypeError(f'Unrecognized type `{type(el)}`')
 
     return apply_single(space, fn=_from_space)
@@ -95,11 +69,7 @@ def from_space(space, *leading, ctx=mp):
 
 def from_shared(shm):
     """Reconstruct numpy arrays form shared storage."""
-    def _from_shared(el):
-        if isinstance(el, SharedArray):
-            return el.numpy()
-        raise TypeError(f'Unrecognized type `{type(el)}`')
-    return apply_single(shm, fn=_from_shared)
+    return PickleShared.to_structured(shm)
 
 
 class vecEnvWorker:
@@ -155,9 +125,16 @@ class vecEnvWorker:
         #  parent process anyway.
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
+        def _sigterm(signalnum, frame):
+            raise TerminateInterrupt
+        signal.signal(signal.SIGTERM, _sigterm)
+
         # prepare the environment and shared memory
         self.env = self.factory()
         self.buf_obs, self.buf_act = from_shared(self.shared)
+
+        # announce successful init
+        self.comm.tx.send(True)
 
     def shutdown(self):
         self.comm.tx.close()
@@ -165,6 +142,13 @@ class vecEnvWorker:
         self.env.close()
 
     def dispatch(self):
+        # We cannot desync here since the barrier requires at least `n+1`
+        #  processes at it, while we spawn at most `n+1`. Hence for one
+        #  proc to wait here, while other are in the while-loop in `.run`
+        #  is impossible, as it would mean that some barrier has been
+        #  bypassed with `n` processes.
+        # self._barrier.wait()
+
         try:
             # block until the request and data are ready
             name, *data = self.comm.rx.recv()
@@ -205,7 +189,9 @@ class vecEnvWorker:
 
             # done indicates that $s_{t+1}$ (`obs`) is terminal and thus
             #  its $v(s_{t+1})$ (present value of the reward flow) is zero
-            if done:
+            # XXX if `done` is not a scalar `bool`, then the environment is
+            #  likely vectorized and auto-resetting.
+            if isinstance(done, bool) and done:
                 obs = self.env.reset()
 
             # record buf_obs[i] = $s_{t+1}$ if not `done` else $s_0$
@@ -230,7 +216,7 @@ class vecEnvWorker:
         return True
 
 
-class vecEnv(object):
+class ParallelVecEnv(Env):
     def __init__(self, envs, *, method=None, timeout=15):
         ctx = mp  # .get_context(method or 'forkserver')
 
@@ -294,7 +280,8 @@ class vecEnv(object):
         self.processes, self.comm = zip(*state)
 
         # wait until all workers have started
-        self._wait()
+        if not all(self._wait()._recv()):
+            raise RuntimeError('Failed to launch all worker subprocesses.')
 
     @property
     def is_alive(self):
@@ -302,6 +289,10 @@ class vecEnv(object):
 
     def __len__(self):
         return len(self.processes)
+
+    @property
+    def nenvs(self):
+        return len(self)
 
     def _wait(self, timeout=None):
         """Wait until all workers have processed the request."""
@@ -322,9 +313,7 @@ class vecEnv(object):
             exception = TimeoutError
 
         finally:
-            if not self._errors.empty():
-                index, name, typ, msg = self._errors.get()
-                exception = typ(f'`{typ.__name__}` in `{name}` idx={index}.\n{msg}')
+            exception = self._error or exception
 
         # re-raise any thrown exceptions
         if exception is not None:
@@ -333,10 +322,27 @@ class vecEnv(object):
 
         return self
 
+    @property
+    def _error(self):
+        if self._errors.empty():
+            return None
+
+        index, name, typ, msg = self._errors.get()
+        return typ(f'`{typ.__name__}` in `{name}` idx={index}.\n{msg}')
+
     def _send(self, request, *args, **kwargs):
         """Send a request through them-us pipe."""
-        for comm in self.comm:
-            comm.tx.send((request, *args, kwargs))
+        try:
+            for comm in self.comm:
+                comm.tx.send((request, *args, kwargs))
+
+        except BrokenPipeError:
+            self.__del__()
+            raise self._error from None
+
+        # notify all about ready commands.
+        # NB if wait at this barrier iff other procs wait at the dispatch
+        # self.finished.wait()
 
         return self
 
@@ -355,6 +361,13 @@ class vecEnv(object):
             comm.tx.close()
             comm.rx.close()
 
+        # # sync with workers
+        # try:
+        #     self.finished.wait()
+
+        # except BrokenBarrierError:
+        #     pass
+
         # shutdown event is `special`, because workers do not explicitly sync
         #  afterwards, and just terminate (which is an implicit sync).
         # self._wait()
@@ -365,7 +378,7 @@ class vecEnv(object):
         self._send('reset', **kwargs)  # action is not required
         self._wait()  # self.sem_obs.acquire()  # wait for the reset
         self._recv()
-        return self.buf_obs
+        return self.buf_obs.copy()
 
     def step(self, actions):
         setitem(self.buf_act, slice(None), actions)  # conforms to the buffer
@@ -374,8 +387,7 @@ class vecEnv(object):
 
         # aux data is in the pipe, the observation is in the shared memory
         _, reward, done, info = zip(*self._recv())
-        return self.buf_obs, np.array(reward), np.array(done), info
-        # apply_single(buffer, fn=torch.from_numpy)
+        return self.buf_obs.copy(), np.array(reward), np.array(done), info
 
     def render(self, mode='human', timeout=30):
         self._send('render', mode=mode)
@@ -392,12 +404,74 @@ class vecEnv(object):
         for comm, seed in zip(self.comm, seeds):
             comm.tx.send(('seed', seed))
 
-        return self._wait()._recv()
+        self._wait()
+        return list(zip(*self._recv()))
 
     def broadcast(self, request, *args, **kwargs):
         """Broadcast a general command to all workers."""
         self._send(request, *args, kwargs)
         return self._wait()._recv()
+
+
+class SerialVecEnv(Env):
+    """Serial version of the vecEnv"""
+    def __init__(self, envs):
+        env = envs[0]()
+        self.observation_space = batch_space(env.observation_space, len(envs))
+        self.action_space = batch_space(env.action_space, len(envs))
+        env.close()
+        del env
+
+        self.processes = [factory() for factory in envs]
+
+    def __len__(self):
+        return len(self.processes)
+
+    @property
+    def nenvs(self):
+        return len(self.processes)
+
+    def reset(self, **kwargs):
+        return np.stack([env.reset(**kwargs) for env in self.processes])
+
+    def step(self, actions):
+        result = []
+        for j, env in enumerate(self.processes):
+            obs, rew, done, info = env.step(actions[j])
+            if done:
+                obs = env.reset()
+
+            # jagged edge obs is s_0 if done else s_{t+1}, rew is r_{t+1}
+            result.append((obs, rew, done, info))
+
+        obs, rew, done, info = zip(*result)
+        return np.stack(obs), np.array(rew), np.array(done), info
+
+    def render(self, mode='human'):
+        return all([env.render(mode) for env in self.processes])
+
+    def close(self):
+        for env in self.processes:
+            env.close()
+
+    def seed(self, seeds):
+        return list(zip(*[
+            env.seed(seed) for env, seed in zip(self.processes, seeds)
+        ]))
+
+    def broadcast(self, request, *args, **kwargs):
+        assert request not in ('reset', 'step', 'render', 'close', 'seed')
+
+        result = []
+        for env in self.processes:
+            attr = getattr(env, request)
+            if not callable(attr):
+                result.append(attr)
+            else:
+                # name = attr.__name__
+                result.append(attr(*args, **kwargs))
+
+        return result
 
 
 if __name__ == '__main__':
@@ -412,18 +486,21 @@ if __name__ == '__main__':
     from functools import wraps
 
     # import gym
+    # https://www.cloudcity.io/blog/2019/02/27/things-i-wish-they-told-me-about-multiprocessing-in-python/
 
     class WrappedRandomDiscoMaze:
         @wraps(RandomDiscoMaze.__init__)
         def __new__(cls, *args, **kwargs):
             # return ToTensor(ChannelFirst(RandomDiscoMaze(*args, **kwargs)))
-            # # return RandomDiscoMaze(*args, **kwargs)
-            return TerminateOnLostLife(gym.make('BreakoutNoFrameskip-v4'))
+            return RandomDiscoMaze(*args, **kwargs)
+            # return TerminateOnLostLife(gym.make('BreakoutNoFrameskip-v4'))
 
-    vec = vecEnv([
-        lambda: WrappedRandomDiscoMaze(10, 10, field=(2, 2))
-        for _ in range(4)
-    ], method='spawn', timeout=30)
+    vec = ParallelVecEnv([
+        lambda: SerialVecEnv([
+            lambda: gym.make('BreakoutNoFrameskip-v4')
+            # lambda: WrappedRandomDiscoMaze(10, 10, field=(2, 2))
+        ] * 4)
+    ] * 4, timeout=None)
 
     # from rlplay.utils.plotting.imshow import ImageViewer
     # im = ImageViewer(caption='test', resizable=False, vsync=True, scale=(5, 5))
@@ -432,10 +509,10 @@ if __name__ == '__main__':
     print(vec.action_space)
 
     vec.reset()
-    for _ in tqdm.tqdm(range(1000), disable=False):
+    for _ in tqdm.tqdm(range(10000), disable=False):
         obs, reward, done, info = vec.step(vec.action_space.sample())
         # vec.render()  # yes, the exchange works fine im.imshow(obs[0])
 
-    print(obs)
+    print(obs.shape)
     # vec.render()
     vec.close()
