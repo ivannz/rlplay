@@ -1,1 +1,1 @@
-from .chainmdp import ChainMDP
+from .simple import ChainMDP, NarrowPath

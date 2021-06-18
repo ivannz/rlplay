@@ -7,6 +7,43 @@ from sys import maxsize
 from random import Random
 
 
+class NarrowPath(Env):
+    """Chain 0-0-...-0-r-x, with an option to abort at every step."""
+
+    def __init__(self, n=3):
+        super().__init__()
+        # actions are ['next', 'stop']
+        self.action_space = Discrete(2)
+        self.observation_space = Discrete(n + 1)
+        self.reset()
+
+    def render(self):
+        map = f'{"x":.>{self.observation_space.n}}'
+        return map[:self.state_] + '@' + map[self.state_+1:]
+
+    def reset(self):
+        self.state_ = 0
+        return self.state_
+
+    def step(self, action=0):
+        # `X` is the terminal state, `R` -- the reward state
+        X = self.observation_space.n - 1
+        R, reward = X - 1, 0.0
+
+        if self.state_ != X:
+            if action > 0:
+                # reward for aborting before reaching the R-state
+                self.state_, reward = X, 0.0
+
+            else:
+                self.state_ = self.state_ + 1
+
+                # unit reward if the current state is one before the terminal
+                reward = 1.0 if self.state_ == R else 0.0
+
+        return self.state_, reward, self.state_ == X, {}
+
+
 class ChainMDP(Env):
     """Simple chain MDP.
 
