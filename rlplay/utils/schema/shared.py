@@ -9,6 +9,29 @@ from collections import namedtuple
 from .base import apply_single
 
 
+Aliased = namedtuple('Aliased', ['npy', 'pyt'])
+Aliased.__doc__ = """An aliased pair of numpy-torch data.
+
+    Attributes
+    ----------
+    npy : any
+        A nested container of numpy arrays assumed to have idenitcal heirachy
+        to that of `.pyt` and aliasing the same data as the tensors therein.
+
+    pyt : any
+        A nested container of torch tensors assumed to have idenitcal heirachy
+        to that of `.npy` and aliasing the same data as the arrays therein.
+
+    Details
+    -------
+    numpy arrays and torch tensors can be cross initialized is such a way as
+    to allow both to alias the same underlying data storage, so that every
+    update made to one is reflected in the other. This is achieved through
+    the support of numpy's array protocol (like PEP 3118) by torch's cpu
+    tensors.
+    """
+
+
 # XXX we cannot have shared and pinned at the same time!
 def torchify(obj, *leading, copy=False, pinned=False, shared=False):
     """Convert the values in the nested container into torch tensors.
@@ -180,9 +203,6 @@ def numpify(obj, *leading, copy=False, ctx=None):
         return out
 
     return apply_single(obj, fn=_as_array)
-
-
-Aliased = namedtuple('Aliased', ['npy', 'pyt'])
 
 
 def alias(obj, *, pinned=False, shared=False, copy=False):
