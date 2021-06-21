@@ -93,6 +93,36 @@ def apply_single(main, *, fn):
     return fn(main)
 
 
+def unsafe_apply(main, *rest, fn):
+    """`apply` for identically structured containers.
+
+    Details
+    -------
+    Foregoes all type, length or key consistency checks.
+    """
+    # special sequence types must precede generic `Sequence` check
+    if isinstance(main, (str, bytes)):
+        return fn(main, *rest)
+
+    # any Sequence is regressed to either a list or a tuple
+    elif isinstance(main, abc.Sequence):
+        values = [unsafe_apply(*row, fn=fn) for row in zip(main, *rest)]
+        # demote mutable sequences to lists
+        if isinstance(main, abc.MutableSequence):
+            return values
+
+        #  ... and immutable to tuple, keeping in mind namedtuples
+        return getattr(main, '_make', tuple)(values)
+
+    # all Mapping-s are devolved into dicts
+    elif isinstance(main, abc.Mapping):
+        # recurse and rebuild any mapping as dict
+        return {k: unsafe_apply(main[k], *(o[k] for o in rest), fn=fn)
+                for k in main.keys()}
+
+    return fn(main, *rest)
+
+
 def apply_pair(main, other, *, fn):
     """`Apply` optimized for use with paired structured containers."""
     # special sequence types must precede generic `Sequence` check
