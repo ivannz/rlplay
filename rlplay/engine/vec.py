@@ -16,13 +16,13 @@ from gym.vector.utils import batch_space
 
 from collections import namedtuple
 
-from .schema import apply_single
-from .schema.shared import PickleShared
-from .schema.tools import getitem, setitem
+from ..utils.schema import apply_single
+from ..utils.schema.shared import PickleShared
+from ..utils.schema.tools import getitem, setitem
 
 # from .schema.dtype import infer, check, rebuild
 # patch and register Dict and Tuple spaces as containers in abc
-from .integration import gym_spaces as _  # noqa: F401
+from ..utils.integration import gym_spaces as _  # noqa: F401
 
 
 Endpoint = namedtuple('Endpoint', ['rx', 'tx'])
