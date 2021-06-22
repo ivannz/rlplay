@@ -32,7 +32,6 @@ Aliased.__doc__ = """An aliased pair of numpy-torch data.
     """
 
 
-# XXX we cannot have shared and pinned at the same time!
 def torchify(obj, *leading, copy=False, pinned=False, shared=False):
     """Convert the values in the nested container into torch tensors.
 
@@ -47,12 +46,13 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
 
     copy: bool, default=False
         Forces a copy even in the case when one is not necessary, which
-        effectively disables torch-numpy memory aliasing altogether.
+        disables torch-numpy memory aliasing altogether, if the original data
+        were a numpy array.
 
     pinned: bool, default=False
         The underlying storage of the newly created tensor resides in pinned
         memory (non-paged) for faster host-device transfers. If the original
-        value was a numpy ndarray, then no aliasing is possible, and a copy
+        value was a numpy array, then no aliasing is possible, and a copy
         is made.
 
         Cannot be used with `shared=True`.
@@ -61,7 +61,7 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
         Allocates the underlying storage of new tensors using torch's memory
         interprocess memory sharing logic which makes it so that all changes
         to the data are reflected between all processes. If the original value
-        was a numpy ndarray, then no aliasing is possible, and a copy is made.
+        was a numpy array, then no aliasing is possible, and a copy is made.
 
         Cannot be used with `pinned=True`.
 
@@ -72,9 +72,9 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
 
     Details
     -------
-    `torch.as_tensor` creates new tensors from lists of numeric data, and lets
-    tensors and ndarrays through (no copy). The resulting torch tensor and
-    the original numpy ndarray alias the same memory, hence changes to one are
+    `torch.as_tensor` creates new tensors from lists of numeric data, and
+    lets tensors and arrays through (no copy). The resulting torch tensor and
+    the original numpy array alias the same memory, hence changes to one are
     reflected in the other UNLESS a copy has been made due to pinned or shared
     flags.
 
@@ -90,7 +90,7 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
     Torch automatically detects if a tensor is being shared and hot-swaps
     correctly allocated shared storage. Hence even when torchified with
     `shared=False` the nested container's tensors will be correctly shared
-    between processes. However any numpy ndarray aliases created prior to
+    between processes. However any numpy array aliases created prior to
     sharing will still reference the swapped-out invalidated torch's storage.
     So it is advisable to preemptively torchify the data within shared memory.
     """
@@ -104,7 +104,7 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
     is_broadcast = all(j == 1 for j in leading)  # also True if not leading
 
     def _as_tensor(x):
-        # alias numpy ndarrays, keep tensors intact, create new from scalars
+        # alias numpy arrays, keep tensors intact, create new from scalars
         pyt = torch.as_tensor(x)
 
         # warn that some data is on device, and cannot be aliased
@@ -149,7 +149,8 @@ def numpify(obj, *leading, copy=False, ctx=None):
 
     copy: bool, default=False
         Forces a copy even in the case when one is not necessary, which
-        effectively disables torch-numpy memory aliasing altogether.
+        disables torch-numpy memory aliasing altogether, if the original data
+        were a torch tensor.
 
     ctx: multiprocessing context, default=None
         If `ctx` is not None, then allocate the newly created array in the
@@ -168,7 +169,7 @@ def numpify(obj, *leading, copy=False, ctx=None):
     -------
     We use `numpy.asarray` to create new array from lists of numeric or string
     data, leaving numpy arrays intact, and aliasing torch tensors as arrays. In
-    the latter case the resulting numpy ndarray and the original torch tensor
+    the latter case the resulting numpy array and the original torch tensor
     reference the same underlying data storage, hence changes to one will be
     reflected in the other.
 
@@ -184,7 +185,7 @@ def numpify(obj, *leading, copy=False, ctx=None):
     is_broadcast = all(j == 1 for j in leading)
 
     def _as_array(x):
-        # alias torch tensors, keep ndarrays intact, create new from scalars
+        # alias torch tensors, keep arrays intact, create new from scalars
         npy = numpy.asarray(x)
         if not copy and ctx is None and is_broadcast:
             if leading:
@@ -205,27 +206,63 @@ def numpify(obj, *leading, copy=False, ctx=None):
     return apply_single(obj, fn=_as_array)
 
 
-def alias(obj, *, pinned=False, shared=False, copy=False):
-    """Make nested containers with aliased numpy ndarrays and torch tensors.
+def aliased(ref, *, copy=False, pinned=False, shared=False):
+    """Make a pair of nested containers with aliased numpy arrays and torch
+    tensors from the reference data.
 
     Parameters
     ----------
-    obj: any
-        The nested container (dict, list, tuple, or namedtuple) of data.
+    ref: any
+        The reference nested container (dict, list, tuple, or namedtuple)
+        of data.
+
+    copy: bool, default=False
+        Force a copy of the original data in `ref` during torchification even
+        if one is not necessary. This ONLY prevents aliasing the data in `ref`,
+        not in the returned pair.
+
+    pinned: bool, default=False
+        The storage of the newly created tensors during torchification resides
+        in pinned memory (non-paged) for faster host-device transfers. If the
+        original data in `ref` is a numpy array, or a non-pinned tensor, then
+        no aliasing is possible, and a copy is forced. This ONLY prevents
+        aliasing the data in `ref`.
+
+        Cannot be used with `shared=True`.
+
+    shared: bool, default=False
+        During torchification allocate the underlying storage of new tensors
+        using torch's interprocess memory sharing logic, making it so that all
+        changes to the tensor are reflected in ALL processes. If the original
+        data in `ref` is a numpy array or a non-shared tensor, then no aliasing
+        is possible, and a copy is forced. This ONLY prevents aliasing the data
+        in `ref`.
+
+        Cannot be used with `pinned=True`.
 
     Returns
     -------
     obj: Aliased
-        A named tuple with npy and pyt slots having identically structured
-        nested containers of aliased numpy ndarrays and torch tensors.
+        A named tuple with `npy` and `pyt` slots having identically structured
+        nested containers with numpy arrays and torch tensors aliasing the
+        same memory. Whether they also alias the data in `ref` depends on
+        the parameters.
 
     Details
     -------
     Prioritizes torchification, since it is more versatile than numpyfication.
+    The array or tensor data in `ref` is always aliased if `shared`, `pinned`,
+    and `copy` are all `False`.
+
+    If `ref` contains ONLY torch tensors, then this is equivalent to
+
+    >>> res1 = aliased(ref)
+    >>> res2 = Aliased(numpify(ref), ref)
+    >>> # res1.pyt is res2.pyt
     """
     assert not (pinned and shared)
 
-    pyt = torchify(obj, pinned=pinned, shared=shared, copy=copy)
+    pyt = torchify(ref, pinned=pinned, shared=shared, copy=copy)
     return Aliased(npy=numpify(pyt), pyt=pyt)
 
 
@@ -235,16 +272,16 @@ class PickleShared:
     Details
     -------
     Subclassing numpy.ndarray is a bad idea. We can override `__reduce__` to
-    make it aware of the shared array's special pickling, instead of ndarray's
+    make it aware of the shared array's special pickling, instead of array's
     default which forces a copy (because it doesn't own the storage). However,
-    the result will not 100% compatible with a true ndarray: the reduction
+    the result will not 100% compatible with a true array: the reduction
     mechanism has no legitimate way of knowing offsets into the underlying
     storage, which are necessary in certain types of views or slices (rather
     difficult or hacky to compute using `__array_interface__`).
 
     Instead we create a special object, the purpose of which is to let the
     shared storage handle its own pickling, then get passed to a subprocess,
-    and finally rebuilt as a ndarray.
+    and finally rebuilt as a array.
     """
     __slots__ = 'shape', 'dtype', 'buffer'
 
