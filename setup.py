@@ -16,6 +16,7 @@ setup(
         'rlplay.utils.plotting',  # custom imshow, conv2d visualizer and other
         'rlplay.utils.integration',  # patches to various other pacakges
         'rlplay.utils.schema',  # dict-list-tuple nested structures
+        'rlplay.engine',  # returns, andvantages, rollout fragment collectors
     ],
     install_requires=[
         'torch',
