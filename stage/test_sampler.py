@@ -216,9 +216,9 @@ def do_stuff(j, module, optim, actor, fragment):
     pass
 
     # print(j, crew, fragment.npy.bootstrap)
-    print(j, float(negent))
+    # print(j, float(negent))
 
-    return j < 30  # return True
+    return j < 300  # return True
 
 
 if __name__ == '__main__':
@@ -230,11 +230,12 @@ if __name__ == '__main__':
     from rlplay.zoo.env import NarrowPath
     # from gym_discomaze import RandomDiscoMaze
     from gym_discomaze.ext import RandomDiscoMazeWithPosition
+    import torch.multiprocessing as mp
 
     # in the main process
     # the fragment specs: the number of simultaneous environments
     #  and the number of steps of one fragment.
-    B, T = 8, 80
+    B, T = 4, 80
 
     # a pickleable environment factory
     def factory():
@@ -246,7 +247,22 @@ if __name__ == '__main__':
         # return RandomDiscoMaze(10, 10, field=(2, 2))
         return RandomDiscoMazeWithPosition(10, 10, field=(2, 2))
 
+
     collector_double(CloudpickleSpawner(factory), T, B)
+
+    exit(0)
+
+    p_collectors = []
+    for _ in range(8):
+        p = mp.Process(target=collector_double, args=(
+            CloudpickleSpawner(factory), T, B
+        ), daemon=False)
+        p.start()
+        p_collectors.append(p)
+
+    for p in p_collectors:
+        p.join()
+
     # # initialize a sample environment for our main actor
     # env = factory()
     # actor = Actor(env).share_memory()
