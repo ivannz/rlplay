@@ -210,37 +210,52 @@ def prepare(env, actor, n_steps, n_envs, *, pinned=False, shared=False):
     # take a random action in the environment
     act_ = env.action_space.sample()
 
-    # `info_env` is a nested container of numeric scalars or numpy arrays
-    obs_, rew_, fin_, info_env = env.step(act_)
+    # `d_env_info` is a nested container of numeric scalars or numpy arrays
+    # representing auxiliary environment information associated with the
+    # transition.
+    obs_, rew_, fin_, d_env_info = env.step(act_)
 
-    # a single record of the collected sample: ensure correct data types
-    # `obs` and `act` are a nested container of numpy arrays or scalars with
-    #  env's dtypes, `rew` and `fin` are python float and bool, respectively.
-    state = State(obs_, act_, numpy.float32(rew_), bool(fin_))
+    # ensure correct data types for `rew_` (to float32) and `fin_` (to bool),
+    # while leaving `obs_` and `act_` intact as thery are nested containers of
+    # numpy arrays or scalars with environment's proper dtypes.
+    rew_, fin_ = numpy.float32(rew_), bool(fin_)
 
-    # `bootstrap` is the value estimate $v(s_t)$, hence is the same as
-    #  `state.rew`, but with the unit temporal dim.
-    value = torchify(state.rew, 1, n_envs, shared=shared, pinned=pinned)
+    # create 1 x n_envs buffer for bootstrap value estimate $v(s_T)$
+    bootstrap = torchify(rew_, 1, n_envs, shared=shared, pinned=pinned)
 
-    # the buffers for the state and env_info data are n_steps x n_envs
-    state, info_env = torchify((state, info_env), n_steps, n_envs,
-                               shared=shared, pinned=pinned)
+    # the buffer for the aux env info data is n_steps x n_envs
+    d_env_info = torchify(d_env_info, n_steps, n_envs,
+                          shared=shared, pinned=pinned)
 
-    # torchify one complete batch and make a single pass through the actor
+    # allocate n_steps x n_envs torch tensor data buffers for actions, rewards
+    # and termination flags
+    act, rew, fin = torchify((act_, rew_, fin_), n_steps, n_envs,
+                             shared=shared, pinned=pinned)
+
+    # unlike others, the `obs` buffer is (n_steps + 1) x n_envs to accommodate
+    # the observation used to compute the bootstrap value. This does notresolve
+    # the issue of losing terminal observations mid-rollout, but allows SARSA
+    # and Q-learnig.
+    obs = torchify(obs_, n_steps + 1, n_envs, shared=shared, pinned=pinned)
+    state = State(obs, act, rew, fin)
+
+    # make a single pass through the actor with one 1 x n_envs batch
     pyt = unsafe_apply(state, fn=lambda x: x[:1])  # 1 x n_envs x ...
-    unused, hx, info_actor = actor.step(pyt.obs, pyt.act,
-                                        pyt.rew, pyt.fin, hx=None)
+    unused_act, hx, d_act_info = actor.step(pyt.obs, pyt.act,
+                                            pyt.rew, pyt.fin, hx=None)
+    # XXX `act_` is expected to have identical structure to `unused_act`
+    # XXX `d_act_info` must respect the temporal and batch dims
 
-    # get one time slice from the actor's info [B x ...]
-    # XXX `info_actor` must respect the temporal and batch dims
-    info_actor = torchify(unsafe_apply(info_actor, fn=lambda x: x[0]),
+    # get one time slice from the actor's info [n_envs x ...]
+    d_act_info = torchify(unsafe_apply(d_act_info, fn=lambda x: x[0]),
                           n_steps, shared=shared, pinned=pinned)
 
-    # `hx` must not have the temporal dimension: the actor fully specifies it
+    # the actor fully specifies its context `hx`, so we torchify it as is
     hx = torchify(hx, shared=shared, pinned=pinned)
 
-    return Fragment(state=state, actor=info_actor, env=info_env,
-                    bootstrap=value, hx=hx)
+    # bundle the buffers into a trajectory fragment
+    return Fragment(state=state, actor=d_act_info, env=d_env_info,
+                    bootstrap=bootstrap, hx=hx)
 
 
 @torch.no_grad()
@@ -450,14 +465,15 @@ def collect(envs, actor, fragment, state, *, sticky=False):
         out.fin[t] = npy.fin
         # structured_setitem_(out.next_obs, t, npy.obs)
 
-    # push the last observation into the special T+1-th slot
-    # XXX does not resolve the issue of losing terminal observations mid-rollout
-    # structured_setitem_(out.obs, t + 1, npy.obs)
+    # push the last observation into the special T+1-th slot. This is enough
+    # for DQN since obs[t] (x_t) and obs[t+1] (x_{t+1}) are consecutive if
+    # fin[t] is False (d_{t+1}=\bot), and DQN methods ignore the target q-value
+    # at x_{t+1} if it is terminal (d_{t+1}=\top and x_{t+1}=s_*).
+    structured_setitem_(out.obs, t + 1, npy.obs)
 
-    # compute the bootstrapped value estimate for each env.
+    # compute the bootstrapped value estimate for each env
     if hasattr(fragment.pyt, 'bootstrap'):
-        bootstrap = actor.value(pyt.obs, pyt.act,
-                                pyt.rew, pyt.fin, hx=hx)
+        bootstrap = actor.value(pyt.obs, pyt.act, pyt.rew, pyt.fin, hx=hx)
         structured_tensor_copy_(fragment.pyt.bootstrap, bootstrap)
 
     # write back the most recent recurrent state for the next rollout
