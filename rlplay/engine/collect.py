@@ -47,11 +47,13 @@ State.__doc__ = r"""The current state to be acted upon: the current observation
         contains the true current state $s_t$.
     """
 
-InputState = namedtuple('InputState', ['input', 'hx'])
-InputState.__doc__ = """This is a convenience object, that extends `State` by
-    an `hx` container of tensors, that represents the persistent, i.e.
-    recurrent, state of the actor at the start of a trajectory fragment
-    (rollout)."""
+Context = namedtuple('Context', ['input', 'hx', 'next_obs'])
+Context.__doc__ = r"""This is a convenience object, that extends `State` by
+    an `hx` and a `next_obs` containers of tensors. The first represents the
+    persistent context, e.g. the recurrent state, of the actor at the start of
+    a trajectory fragment (rollout). The second stores the next observation
+    $x_{t+1}$ and retains the orignal data before any reset.
+    """
 
 Fragment = namedtuple('Fragment', ['state', 'actor', 'env', 'bootstrap', 'hx'])
 Fragment.__doc__ = r"""A `T x batch` fragment of the trajectories of the actor
@@ -284,14 +286,17 @@ def startup(envs, actor, buffer, *, pinned=False):
     # Create `state`, a dedicated container of [B x ?] aliased copy of the data
     # and the current recurrent state of the actor $h_t$, both possibly
     # residing in torch's pinned memory.
-    state = aliased(InputState(pyt, fragment.pyt.hx), copy=True, pinned=pinned)
+    state = aliased(Context(pyt, fragment.pyt.hx, pyt.obs),
+                    copy=True, pinned=pinned)
 
     # writable view of `state.pyt.input` with an extra temporal dim
-    # `pyt` <<--editable unsqueezed view-->> `_pyt` <<--aliased data-->> `npy`
     unsafe_apply(state.pyt.input, fn=lambda x: x.unsqueeze_(0))  # in-place!
     # XXX we do this so that the actor may rely on T x B x ... data on input
-    # `pyt` is used for interacting with the actor, `npy` -- with the fragment
 
+    # `pyt` is used for interacting with the actor, `npy` -- with the fragment
+    #  and both are just different interfaces to the same underlying data.
+    # anon. torch storage <<--editable unsqueezed view-->> `pyt` torch tensors
+    #        ditto        <<--__array__ data aliasing -->> `npy` numpy arrays
     return state, fragment
 
 
@@ -396,6 +401,7 @@ def collect(envs, actor, fragment, state, *, sticky=False):
     # shorthands for fast access
     # `out[t]` is $x_t, a_t, r_{t+1}$, and $d_{t+1}$, for $x_t$ above
     out, hx = fragment.npy.state, state.pyt.hx
+    npy_next_obs = state.npy.next_obs
 
     # `pyt/npy` is its jagged edge: $x_t, a_{t-1}, r_t$, $d_t$, and $h_t$.
     npy, pyt = state.npy.input, state.pyt.input
@@ -441,7 +447,7 @@ def collect(envs, actor, fragment, state, *, sticky=False):
 
             # get $s_{t+1}$, $r_{t+1}$, and $d_{t+1}$
             obs_, rew_, fin_, info_env = env.step(npy.act[j])
-            # structured_setitem_(npy.next_obs, j, obs_)
+            structured_setitem_(npy_next_obs, j, obs_)
             if info_env:
                 structured_setitem_(fragment.npy.env, (t, j), info_env)
 
@@ -463,7 +469,7 @@ def collect(envs, actor, fragment, state, *, sticky=False):
         structured_setitem_(out.act, t, npy.act)
         out.rew[t] = npy.rew
         out.fin[t] = npy.fin
-        # structured_setitem_(out.next_obs, t, npy.obs)
+        # structured_setitem_(out.next_obs, t, npy_next_obs)
 
     # push the last observation into the special T+1-th slot. This is enough
     # for DQN since obs[t] (x_t) and obs[t+1] (x_{t+1}) are consecutive if
