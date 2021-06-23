@@ -7,7 +7,7 @@ from rlplay.engine.collect import prepare, startup, collect
 from rlplay.engine.collect import BaseActorModule
 from rlplay.engine.returns import np_compute_returns
 
-from rlplay.utils.schema.base import unsafe_apply
+from rlplay.utils.schema.base import unsafe_apply, apply_single
 from rlplay.utils.schema.shared import aliased
 from rlplay.utils.common import multinomial
 
@@ -119,8 +119,12 @@ def worker_context(factory, actor, buffer, *, pin_memory=False):
     return WorkerContext(envs, actor, fragment, state)
 
 
-def worker_double(barrier, factory, actors, buffers, *,
-                  pin_memory=False, locking=False, sticky=False):
+def worker_double(
+    barrier, factory, actors, buffers,
+    *, pin_memory=False, locking=False, sticky=False
+):
+    import torch
+    torch.set_num_threads(1)
     assert len(buffers) == 2
 
     # initialize the environments
@@ -205,7 +209,7 @@ def collector_double(factory, n_steps, n_envs):
         +--------------------+           +--------------------+
         |                    |           | wait for the first |
         | collect(a_1, b_1)  |           | buffer to be ready |
-        |                    |           |                    |
+        |                    |           |  (at the barrier)  |
         +====================+           +====================+  <- barrier
         |                    ---- b_1 -->> train(l, b_1) ---+ |
         | collect(a_2, b_2)  |           |                  | |
@@ -235,7 +239,7 @@ def collector_double(factory, n_steps, n_envs):
         +--------------------+           +--------------------+
         | with a.lock:       |           | wait for the first |
         |   collect(a, b_1)  |           | buffer to be ready |
-        |                    |           |                    |
+        |                    |           |  (at the barrier)  |
         +====================+           +====================+  <- barrier
         | with a.lock:       ---- b_1 -->> train(l, b_1) ---+ |
         |   collect(a, b_2)  |           |                  | |
@@ -255,6 +259,11 @@ def collector_double(factory, n_steps, n_envs):
         |    ...      ...    |           |    ...      ...    |
 
     """
+    import torch
+
+    # disable mutlithreaded computations in the child processes
+    torch.set_num_threads(1)
+
     sticky, pin_memory, double = False, False, True
 
     # initialize a sample environment and our learner model instance
@@ -266,6 +275,9 @@ def collector_double(factory, n_steps, n_envs):
     del env
 
     # prepare the optimizer for the learner
+    learner.train()
+    device_ = torch.device('cpu')  # torch.device('cuda:0')
+    learner.to(device=device_)
     optim = torch.optim.Adam(learner.parameters(), lr=1e-1)
 
     # print(unsafe_apply(fragment, fn=lambda x: x.shape))
@@ -300,7 +312,7 @@ def collector_double(factory, n_steps, n_envs):
 
         # get the current fragment and the actor used to collect it
         ctx = contexts[flipflop]
-        terminate = not do_stuff(j, learner, optim, *ctx)
+        terminate = not do_stuff(j, learner, optim, *ctx, device=device_)
 
         # updating the shared actor should not be followed by heavy
         #  computations or any io-bound tasks (aside from itself)
@@ -322,11 +334,10 @@ def collector_double(factory, n_steps, n_envs):
     print(learner._counter)
 
 
-def do_stuff(j, module, optim, actor, fragment):
+def do_stuff(j, module, optim, actor, fragment, *, device=None):
     # do something with the fragment
-    pyt = fragment.pyt
-
-    module.train()
+    pyt = apply_single(fragment.pyt, fn=lambda t: t.to(device, non_blocking=True))
+    # XXX indeed a non-aliased device-resident copy
 
     actions, hx, info = module(pyt.state.obs, pyt.state.act,
                                pyt.state.rew, pyt.state.fin, hx=pyt.hx)
