@@ -8,7 +8,7 @@ from rlplay.engine.collect import BaseActorModule
 from rlplay.engine.returns import np_compute_returns
 
 from rlplay.utils.schema.base import unsafe_apply, apply_single
-from rlplay.utils.schema.shared import aliased
+from rlplay.utils.schema.shared import aliased, torchify
 from rlplay.utils.common import multinomial
 
 import time
@@ -85,6 +85,31 @@ class SimpleActor(BaseActorModule):
         return actions, (), dict(value=value, logits=logits)
 
 
+class RandomActor(BaseActorModule):
+    # We should not store references to instantiated env,
+    # since it is about to be communicated to child processes
+    def __init__(self, observation, action):
+        super().__init__()
+
+        # XXX for now we just store the spaces
+        self.observation_space, self.action_space = observation, action
+        self.register_buffer('_counter', torch.zeros(1))
+
+    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None):
+        # Everything is [T x B x ...]
+        n_steps, n_envs, *_ = fin.shape
+
+        # `fin` indicates which of the `act` and `rew` are invalid
+        logits = torch.randn(n_steps, n_envs).log_softmax(dim=-1)
+        value = torch.randn(n_steps, n_envs)
+
+        actions = torch.tensor([self.action_space.sample()
+                                for _ in range(n_envs)]*n_steps)
+
+        # rnn states, value estimates, and other info
+        return actions, (), dict(value=value, logits=logits)
+
+
 def update_actor(learner, actor):
     return actor.load_state_dict(learner.state_dict())
 
@@ -156,7 +181,7 @@ def worker_double(
     # close the environments in states
     for ctx in context:
         for env in ctx.envs:
-            env.close()
+            pass  # env.close()
 
     return True
 
@@ -268,17 +293,18 @@ def collector_double(factory, n_steps, n_envs):
 
     # initialize a sample environment and our learner model instance
     env = factory()
-    learner = SimpleActor(env.observation_space, env.action_space)
+    learner = RandomActor(env.observation_space, env.action_space)
 
     # create two contexts for double buffering
     contexts = collector_contexts(env, learner, n_steps, n_envs, double=double)
-    del env
+    # env.close()  # ex. `nle` does not like being closed or deleted
+    # del env
 
     # prepare the optimizer for the learner
     learner.train()
     device_ = torch.device('cpu')  # torch.device('cuda:0')
     learner.to(device=device_)
-    optim = torch.optim.Adam(learner.parameters(), lr=1e-1)
+    optim = None  # torch.optim.Adam(learner.parameters(), lr=1e-1)
 
     # print(unsafe_apply(fragment, fn=lambda x: x.shape))
     # we use `.pyt`, since torch has simpler pickling/unpickling for sharing
@@ -332,6 +358,7 @@ def collector_double(factory, n_steps, n_envs):
     print(all(unsafe_apply(catted, fn=lambda x: (yield x.is_shared()))))
     print(unsafe_apply(catted, fn=lambda x: x.shape))
     print(learner._counter)
+    print(unsafe_apply(catted, fn=lambda x: x.numel() * x.element_size()))
 
 
 def do_stuff(j, module, optim, actor, fragment, *, device=None):
@@ -347,6 +374,8 @@ def do_stuff(j, module, optim, actor, fragment, *, device=None):
     crew = np_compute_returns(
         fragment.npy.state.rew, fragment.npy.state.fin,
         gamma=1.0, bootstrap=fragment.npy.bootstrap)
+
+    return j < 1200  # return True
 
     # log_prob = logits.index_select(-1, actions)
 
@@ -382,8 +411,8 @@ if __name__ == '__main__':
 
     # a pickleable environment factory
     def factory():
-        return NarrowPath()
-        # return gym.make("NetHackScore-v0")
+        # return NarrowPath()
+        return gym.make('NetHackScore-v0')
         # return gym.make('CartPole-v0').unwrapped
         # return gym.make('BreakoutNoFrameskip-v4').unwrapped
         # return gym.make('SpaceInvadersNoFrameskip-v4').unwrapped
