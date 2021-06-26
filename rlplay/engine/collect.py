@@ -414,6 +414,8 @@ def collect(envs, actor, fragment, state, *, sticky=False):
 
     # XXX stepper uses a single actor for a batch of environments:
     # * one mode of exploration, poor randomness
+    # if device is not None:
+    #     hx = apply_single(hx, fn=lambda x: x.to(device))
     for t in range(len(out.fin)):
         # copy $s_t$ to out[t]
         structured_setitem_(out.obs, t, npy.obs)
@@ -426,6 +428,8 @@ def collect(envs, actor, fragment, state, *, sticky=False):
         # the actor's outputs, except `hx`, respect time and batch dims, actor
         #  must not update `hx` in-place, just process the context and yield
         #  a new one!
+        # if device is not None:
+        #     pyt_ = apply_single(pyt, fn=lambda x: x.to(device))  # on-device
         act_, hx, info_actor = actor.step(pyt.obs, pyt.act,
                                           pyt.rew, pyt.fin, hx=hx)
 
