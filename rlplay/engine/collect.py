@@ -52,7 +52,7 @@ Context.__doc__ = r"""This is a convenience object, that extends `State` by
     an `hx` and a `next_obs` containers of tensors. The first represents the
     persistent context, e.g. the recurrent state, of the actor at the start of
     a trajectory fragment (rollout). The second stores the next observation
-    $x_{t+1}$ and retains the orignal data before any reset.
+    $x_{t+1}$ and retains the original data before any reset.
     """
 
 Fragment = namedtuple('Fragment', ['state', 'actor', 'env', 'bootstrap', 'hx'])
@@ -197,7 +197,9 @@ class BaseActorModule(torch.nn.Module):
 
 # we build buffer with torch (in pinned memory), then mirror them to numpy
 @torch.no_grad()
-def prepare(env, actor, n_steps, n_envs, *, pinned=False, shared=False):
+def prepare(
+    env, actor, n_steps, n_envs, *, pinned=False, shared=False, device=None
+):
     """Build the trajectory fragment buffer as a nested container of torch tensors.
 
     Idea
@@ -235,25 +237,26 @@ def prepare(env, actor, n_steps, n_envs, *, pinned=False, shared=False):
                              shared=shared, pinned=pinned)
 
     # unlike others, the `obs` buffer is (n_steps + 1) x n_envs to accommodate
-    # the observation used to compute the bootstrap value. This does notresolve
+    # the observation used to compute the bootstrap value. This doesn't resolve
     # the issue of losing terminal observations mid-rollout, but allows SARSA
-    # and Q-learnig.
+    # and Q-learning.
     obs = torchify(obs_, n_steps + 1, n_envs, shared=shared, pinned=pinned)
     state = State(obs, act, rew, fin)
 
-    # make a single pass through the actor with one 1 x n_envs batch
-    pyt = unsafe_apply(state, fn=lambda x: x[:1])  # 1 x n_envs x ...
+    # make a single pass through the actor with one 1 x n_envs x ... batch
+    pyt = unsafe_apply(state, fn=lambda x: x[:1].to(device))
     unused_act, hx, d_act_info = actor.step(pyt.obs, pyt.act,
                                             pyt.rew, pyt.fin, hx=None)
     # XXX `act_` is expected to have identical structure to `unused_act`
     # XXX `d_act_info` must respect the temporal and batch dims
 
     # get one time slice from the actor's info [n_envs x ...]
-    d_act_info = torchify(unsafe_apply(d_act_info, fn=lambda x: x[0]),
+    d_act_info = torchify(unsafe_apply(d_act_info, fn=lambda x: x[0].cpu()),
                           n_steps, shared=shared, pinned=pinned)
 
     # the actor fully specifies its context `hx`, so we torchify it as is
-    hx = torchify(hx, shared=shared, pinned=pinned)
+    hx = torchify(unsafe_apply(hx, fn=torch.Tensor.cpu),
+                  shared=shared, pinned=pinned)
 
     # bundle the buffers into a trajectory fragment
     return Fragment(state=state, actor=d_act_info, env=d_env_info,
