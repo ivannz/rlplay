@@ -36,11 +36,9 @@ class RolloutSampler:
         self.n_per_batch = n_per_batch
         # self.n_steps, self.n_per_actor, self.n_buffers
 
-        # create a host-resident copy of the module in shared memory with
-        #  a state-dict update lock, which serves as a vessel for updating
-        #  the actors in workers
+        # create a host-resident copy of the module in shared memory, which
+        #  serves as a vessel for updating the actors in workers
         self.module = deepcopy(module).cpu().share_memory()
-        self._update_lock = mp.Lock()
 
         # initialize a reference buffer and make its shared copies
         env = factory()  # XXX seed=None here since used only once
@@ -70,8 +68,14 @@ class RolloutSampler:
 
     def __iter__(self):
         """DOC"""
+        # get the correct multiprocessing context (torch-friendly)
+        ctx = mp.get_context('spawn')
+
+        # create a state-dict update lock
+        self._update_lock = ctx.Lock()
+
         # setup buffer index queues (more reliable than passing tensors around)
-        self.q_empty, self.q_ready = mp.Queue(), mp.Queue()
+        self.q_empty, self.q_ready = ctx.Queue(), ctx.Queue()
         for index, _ in enumerate(self.buffers):
             self.q_empty.put(index)
 
