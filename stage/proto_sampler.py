@@ -5,22 +5,162 @@ import gym
 # import nle
 
 import torch.multiprocessing as mp
-# from collections import namedtuple
 
-from rlplay.engine.collect import prepare, startup, collect
 from rlplay.engine.collect import BaseActorModule
-from rlplay.engine.returns import np_compute_returns
-
+from rlplay.engine.collect import prepare, startup, collect
 from rlplay.utils.schema.base import unsafe_apply
-from rlplay.utils.schema.shared import aliased, torchify
-from rlplay.utils.schema.shared import Aliased, numpify
+from rlplay.utils.schema.shared import Aliased, aliased
+from rlplay.utils.schema.shared import numpify, torchify
+
+from rlplay.engine.returns import np_compute_returns
 from rlplay.utils.common import multinomial
-
-
 from rlplay.engine.vec import CloudpickleSpawner
+
 from copy import deepcopy
 
-# Endpoint = namedtuple('Endpoint', ['rx', 'tx'])
+
+class RolloutSampler:
+    def __init__(
+        self, factory, module, n_steps=20,
+        # number of actors and environments each interacts with
+        n_actors=8, n_per_actor=2,
+        # the size of the rollout buffer pool (must have spare buffers)
+        n_buffers=16, n_per_batch=4,
+        *,
+        sticky=False, pinned=False, close=False, device=None,
+    ):
+        """DOC"""
+        self.factory, self.close = factory, close
+        self.sticky, self.pinned = sticky, pinned
+        self.n_actors, self.device = n_actors, device
+        self.n_per_batch = n_per_batch
+        # self.n_steps, self.n_per_actor, self.n_buffers
+
+        # create a host-resident copy of the module in shared memory with
+        #  a state-dict update lock, which serves as a vessel for updating
+        #  the actors in workers
+        self.module = deepcopy(module).cpu().share_memory()
+        self._update_lock = mp.Lock()
+
+        # initialize a reference buffer and make its shared copies
+        env = factory()  # XXX seed=None here since used only once
+
+        # create trajectory fragment buffers of torch tensors in the shared
+        #  memory using the learner as a mockup (a single one-element batch
+        #  forward pass).
+        # XXX torch tensors have much simpler pickling/unpickling when sharing
+        #  device = next(self.module.parameters()).device
+        ref = prepare(env, self.module, n_steps, n_per_actor, device=None)
+        self.buffers = [torchify(ref, shared=True) for _ in range(n_buffers)]
+
+        # some environments don't like being closed or deleted, e.g. `nle`
+        if self.close:
+            env.close()
+
+    def update_from(self, src, *, dst=None):
+        # locking makes updates consistent, but it might be possible that
+        #  stochastic incomplete partial updates inject extra stochastcity
+        dst = self.module if dst is None else dst
+        with self._update_lock:
+            return dst.load_state_dict(src.state_dict(), strict=True)
+
+    def _collate(self, *tensors, dim=1):
+        """concatenate along dim=1"""
+        return torch.cat(tensors, dim).to(self.device, non_blocking=True)
+
+    def __iter__(self):
+        """DOC"""
+        # setup buffer index queues (more reliable than passing tensors around)
+        self.q_empty, self.q_ready = mp.Queue(), mp.Queue()
+        for index, _ in enumerate(self.buffers):
+            self.q_empty.put(index)
+
+        # spawn worker subprocesses (nprocs is world size)
+        p_workers = mp.spawn(
+            self.collect, nprocs=self.n_actors, daemon=False, join=False,
+            # collectors' device may be other than the main device
+            args=(self.n_actors, self.sticky, False, None),  # pinned, device
+        )
+        try:
+            while True:
+                # collate ready structured rollout fragments along batch dim=1
+                indices = [self.q_ready.get() for _ in range(self.n_per_batch)]
+                batch = unsafe_apply(*(self.buffers[j] for j in indices),
+                                     fn=self._collate)
+
+                # repurpose buffers for later batches
+                for j in indices:
+                    self.q_empty.put(j)
+
+                yield batch
+
+        finally:
+            # shutdown workers: we don't care about `ready` indices
+            # * closing the empty queue doesn't work register
+            # * can only put None-s
+            for _ in range(self.n_actors):
+                self.q_empty.put(None)
+
+            p_workers.join()
+
+    def collect(self, rk, ws, sticky=False, pinned=False, device=None):
+        r"""
+        Details
+        -------
+        Using queues to pass buffers (even shared) leads to resource leaks. The
+        originally considered pattern:
+            q2.put(collect(buf=q1.get())),
+        -- is against the "passing along" guideline expressed in
+        https://pytorch.org/docs/stable/multiprocessing.html#sharing-cuda-tensors
+
+        Since torch automatically shares tensors when they're reduced to be put into
+        a queue or a child precess.
+        https://pytorch.org/docs/master/notes/multiprocessing.html#reuse-buffers-passed-through-a-queue
+
+        Closing queues also does not work as a shutdown indicator.
+        """
+
+        # disable mutlithreaded computations in the worker processes
+        torch.set_num_threads(1)
+
+        # the very first buffer initializes the environment-state context
+        ix = self.q_empty.get()
+        if ix is None:
+            return
+
+        # make an identical local copy of the reference actor on cpu
+        actor = deepcopy(self.module).to(device)
+
+        # prepare local envs and the associated local env-state context
+        n_envs = self.buffers[ix].state.fin.shape[1]  # `fin` is always T x B
+        envs = [self.factory() for _ in range(n_envs)]  # XXX seed?
+        ctx, fragment = startup(envs, actor, self.buffers[ix], pinned=pinned)
+
+        # cache of aliased fragments
+        fragments = {ix: fragment}
+        try:
+            while ix is not None:
+                # XXX `aliased` redundantly traverses `pyt` nested containers,
+                # so we just numpify it, since buffers are ALL torch tensors.
+                if ix not in fragments:
+                    fragments[ix] = Aliased(numpify(self.buffers[ix]),
+                                            self.buffers[ix])
+
+                # collect rollout with an up-to-date actor into the buffer
+                # XXX buffers are interchangeable, ctx is not
+                self.update_from(src=self.module, dst=actor)
+                collect(envs, actor, fragments[ix], ctx,
+                        sticky=sticky, device=device)
+
+                self.q_ready.put(ix)
+
+                # fetch the next buffer
+                ix = self.q_empty.get()
+
+        finally:
+            if self.close:
+                for env in envs:
+                    env.close()
 
 
 class Actor(BaseActorModule):
@@ -111,159 +251,6 @@ class RandomActor(BaseActorModule):
         return actions, (), dict(value=value, logits=logits)
 
 
-def worker_queue(
-    i, q_empty, q_ready,
-    factory, reference, buffers,
-    sticky=False, pin_memory=False
-):
-    r"""
-    Details
-    -------
-    Using queues to pass buffers (even shared) leads to resource leaks. The
-    originally considered pattern:
-        q2.put(collect(buf=q1.get())),
-    -- is against the "passing along" guideline expressed in
-    https://pytorch.org/docs/stable/multiprocessing.html#sharing-cuda-tensors
-    https://pytorch.org/docs/master/notes/multiprocessing.html#reuse-buffers-passed-through-a-queue
-    Since torch automatically shares tensors when they're reduce to be put into
-    a queue or a child precess.
-
-    Closing queues also does not work as a shutdown indicator.
-    """
-    # disable mutlithreaded computations in the child processes
-    import torch
-    torch.set_num_threads(1)
-
-    # make an identical local copy of the reference actor
-    actor = deepcopy(reference).cpu()  # run on cpu
-
-    # the first buffer is used for initializing the environment-state context
-    index = q_empty.get()
-    if index is None:
-        return True
-
-    # prepare our own envs and the running state associated with them
-    n_steps, n_envs = buffers[index].state.fin.shape  # T x B bool tensor
-    envs = [factory() for _ in range(n_envs)]
-    state, fragment = startup(envs, actor, buffers[index], pinned=pin_memory)
-    while True:
-        # update the local actor's parameters from the reference module
-        actor.load_state_dict(reference.state_dict())
-
-        # collect and send back
-        collect(envs, actor, fragment, state, sticky=sticky)
-        q_ready.put(index)
-
-        # get the next buffer or the termination signal
-        index = q_empty.get()
-        if index is None:
-            break
-
-        # XXX `aliased` makes a redundant traversal of `pyt` nested container
-        fragment = Aliased(numpify(buffers[index]), buffers[index])
-
-    # close the environments in states
-    for env in envs:
-        pass  # env.close()
-
-    return True
-
-
-def collector_queue(
-    factory, n_steps, n_envs, n_actors=8, n_buffers=20, n_buffers_per_batch=4, *, device=None
-):
-    # we need to set more buffers than workers
-    env = factory()
-    sticky, pin_memory = False, False
-
-    # initialize queues buffers
-    q_empty, q_ready, buffers = mp.Queue(), mp.Queue(), []
-
-    # create trajectory fragment buffers of torch tensors in the shared memory
-    #  using the learner as a mockup (a single one-element batch forward pass).
-    # XXX torch tensors have much simpler pickling/unpickling when sharing
-    for index in range(n_buffers):
-        buffers.append(prepare(env, learner, n_steps, n_envs,
-                               shared=True, device=device))
-        q_empty.put(index)
-
-    # env.close()  # ex. `nle` does not like being closed or deleted
-    # del env
-
-    # create a host-resident reference actor in shared memory, which serves
-    #  as a vessel for updating the actors in workers.
-    reference = deepcopy(learner).cpu().share_memory()
-    # XXX we need to figure out what exactly do we do with actors
-
-    # spawn workers
-    p_workers = mp.spawn(worker_queue, args=(
-        q_empty, q_ready, factory, reference, buffers, sticky, pin_memory
-    ), nprocs=n_actors, daemon=False, join=False)
-
-    # step through
-    step = 0
-    while True:
-        filled = [q_ready.get() for _ in range(n_buffers_per_batch)]
-        batch = unsafe_apply(
-            *(buffers[index] for index in filled),
-            fn=lambda *x: torch.cat(x, dim=1, out=None)
-                               .to(device, non_blocking=True))
-        for index in filled:
-            q_empty.put(index)
-
-        # train
-        try:
-            yield batch
-
-        except GeneratorExit:
-            # send shutdown signals to workers
-            # * closing the empty queue doesn't work register
-            # * can only put None-s
-            for _ in range(n_actors):
-                q_empty.put(None)
-
-            p_workers.join()
-            raise
-
-        reference.load_state_dict(learner.state_dict())
-
-        step += 1
-
-    return
-
-
-def train_one(j, module, batch, optim):
-    # batch = aliased(batch)
-
-    actions, hx, info = module(batch.state.obs, batch.state.act,
-                               batch.state.rew, batch.state.fin,
-                               hx=batch.hx)
-
-    # crew = np_compute_returns(
-    #     batch.npy.state.rew, batch.npy.state.fin,
-    #     gamma=1.0, bootstrap=batch.npy.bootstrap)
-
-    # time.sleep(0.25)
-    module._counter.add_(1)
-    return j < 120  # return True
-
-    # logits, values = info['logits'], info['value']
-
-    # # log_prob = logits.index_select(-1, actions)
-
-    # negent = torch.kl_div(torch.tensor(0.), logits.exp()).sum(dim=-1).mean()
-
-    # ell2 = 0.
-
-    # optim.zero_grad()
-    # (1e-1 * ell2 + 1e-2 * negent).backward()
-    # optim.step()
-
-    # # pass
-
-    # return j < 1200  # return True
-
-
 if __name__ == '__main__':
     from rlplay.zoo.env import NarrowPath
     # from gym_discomaze import RandomDiscoMaze
@@ -286,8 +273,8 @@ if __name__ == '__main__':
 
     # initialize a sample environment and our learner model instance
     env = factory()
-
     learner = Actor(env.observation_space, env.action_space)
+
     learner.train()
     device_ = torch.device('cpu')  # torch.device('cuda:0')
     learner.to(device=device_)
@@ -295,24 +282,64 @@ if __name__ == '__main__':
     # prepare the optimizer for the learner
     optim = None  # torch.optim.Adam(learner.parameters(), lr=1e-1)
 
-    collector_queue(CloudpickleSpawner(factory), T, B, 8, 24, 4)
+    rollout = RolloutSampler(
+        CloudpickleSpawner(factory), learner,
+        n_steps=T, n_actors=2, n_per_actor=B, n_buffers=16, n_per_batch=4,
+        sticky=True,
+        pinned=False,
+        close=False,
+        device=None,
+    )
 
-    batch = unsafe_apply(*buffers, fn=lambda *x: torch.cat(x, dim=1))
-    print(batch)
-    print(unsafe_apply(batch, fn=lambda x: (x.shape, x.is_shared())))
-    print(unsafe_apply(batch, fn=lambda x: x.numel() * x.element_size()))
-    print(learner._counter)
+    import tqdm
+    for j, batch in enumerate(tqdm.tqdm(rollout)):
+        # batch = aliased(batch)
+        actions, hx, info = learner(batch.state.obs, batch.state.act,
+                                    batch.state.rew, batch.state.fin,
+                                    hx=batch.hx)
 
+        # crew = np_compute_returns(
+        #     batch.npy.state.rew, batch.npy.state.fin,
+        #     gamma=1.0, bootstrap=batch.npy.bootstrap)
 
+        # logits, values = info['logits'], info['value']
+
+        # log_prob = logits.index_select(-1, actions)
+
+        # negent = torch.kl_div(torch.tensor(0.), logits.exp()).sum(dim=-1).mean()
+
+        # ell2 = 0.
+
+        # time.sleep(0.25)
+        learner._counter.add_(1)
+
+        # optim.zero_grad()
+        # (1e-1 * ell2 + 1e-2 * negent).backward()
+        # optim.step()
+
+        rollout.update_from(learner)
+        # rollout.update(learner)
+
+        if j > 120:
+            break
+
+    print(batch, actions, hx, info, learner._counter)
     exit(0)
 
-    p_collectors = []
-    for _ in range(8):
-        p = mp.Process(target=collector_double, args=(
-            CloudpickleSpawner(factory), T, B
-        ), daemon=False)
-        p.start()
-        p_collectors.append(p)
+    # collector_queue(, T, B, 8, 24, 4)
 
-    for p in p_collectors:
-        p.join()
+    # batch = unsafe_apply(*buffers, fn=lambda *x: torch.cat(x, dim=1))
+    # print(batch)
+    # print(unsafe_apply(batch, fn=lambda x: (x.shape, x.is_shared())))
+    # print(unsafe_apply(batch, fn=lambda x: x.numel() * x.element_size()))
+
+    # p_collectors = []
+    # for _ in range(8):
+    #     p = mp.Process(target=collector_double, args=(
+    #         CloudpickleSpawner(factory), T, B
+    #     ), daemon=False)
+    #     p.start()
+    #     p_collectors.append(p)
+
+    # for p in p_collectors:
+    #     p.join()
