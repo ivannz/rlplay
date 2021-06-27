@@ -304,7 +304,7 @@ def startup(envs, actor, buffer, *, pinned=False):
 
 
 @torch.no_grad()
-def collect(envs, actor, fragment, state, *, sticky=False):
+def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     r"""March the actor and the environments in lockstep `n_steps` times.
 
     Parameters
@@ -412,27 +412,31 @@ def collect(envs, actor, fragment, state, *, sticky=False):
     # write the initial recurrent state of the actor to the shared buffer
     structured_tensor_copy_(fragment.pyt.hx, hx)
 
+    # Allocate on-device context and recurrent state, if device is not None
+    pyt_ = pyt
+    if device is not None:
+        pyt_, hx = unsafe_apply((pyt_, hx), fn=lambda x: x.to(device))
+
     # XXX stepper uses a single actor for a batch of environments:
     # * one mode of exploration, poor randomness
-    # if device is not None:
-    #     hx = apply_single(hx, fn=lambda x: x.to(device))
     for t in range(len(out.fin)):
         # copy $s_t$ to out[t]
         structured_setitem_(out.obs, t, npy.obs)
 
-        # $a_t$ is a reaction to $s_t, a_{t-1}, r_t, d_t$ (`npy/pyt`)
-        # XXX the actor is responsible for copying torch tensors of the state
-        #  to a device. At the same time it may return device-resident tensors.
-        # The `hx` state associated with an environment with the corresponding
-        #  `.fin` set should not be updated (only reset).
-        # the actor's outputs, except `hx`, respect time and batch dims, actor
-        #  must not update `hx` in-place, just process the context and yield
-        #  a new one!
-        # if device is not None:
-        #     pyt_ = apply_single(pyt, fn=lambda x: x.to(device))  # on-device
-        act_, hx, info_actor = actor.step(pyt.obs, pyt.act,
-                                          pyt.rew, pyt.fin, hx=hx)
+        # move the updated context to its device-resident copy (`hx` is OK)
+        if pyt_ is not pyt:
+            structured_tensor_copy_(pyt_, pyt)
 
+        # $a_t$ is a reaction to $s_t, a_{t-1}, r_t, d_t$ (`npy/pyt`) and `hx`
+        # XXX the actor's outputs respect time and batch dims, except `hx`
+        act_, hx, info_actor = actor.step(pyt_.obs, pyt_.act,
+                                          pyt_.rew, pyt_.fin, hx=hx)
+        # XXX The actor MUST NOT update or change the inputs and `hx` in-place,
+        #  and must only newly created tensors (if it wished to do so).
+        # XXX The `hx` of an environment that has the corresponding `.fin` flag
+        # set SHOULD NOT be updated (dim=1).
+
+        # the actor may return device-resident tensors, so we copy them here
         structured_tensor_copy_(pyt.act, act_)
         if info_actor:
             # fragment.pyt is likely to have is_shared() = True, so it
