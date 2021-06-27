@@ -4,7 +4,7 @@ import time
 import gym
 # import nle
 
-import torch.multiprocessing as mp
+from torch import multiprocessing
 
 from rlplay.engine.collect import BaseActorModule
 from rlplay.engine.collect import prepare, startup, collect
@@ -28,12 +28,15 @@ class RolloutSampler:
         n_buffers=16, n_per_batch=4,
         *,
         sticky=False, pinned=False, close=False, device=None,
+        start_method='spawn'
     ):
         """DOC"""
         self.factory, self.close = factory, close
         self.sticky, self.pinned = sticky, pinned
         self.n_actors, self.device = n_actors, device
         self.n_per_batch = n_per_batch
+        self.start_method = start_method
+
         # self.n_steps, self.n_per_actor, self.n_buffers
 
         # create a host-resident copy of the module in shared memory, which
@@ -69,21 +72,22 @@ class RolloutSampler:
     def __iter__(self):
         """DOC"""
         # get the correct multiprocessing context (torch-friendly)
-        ctx = mp.get_context('spawn')
-
-        # create a state-dict update lock
-        self._update_lock = ctx.Lock()
+        mp = multiprocessing.get_context(self.start_method)
 
         # setup buffer index queues (more reliable than passing tensors around)
-        self.q_empty, self.q_ready = ctx.Queue(), ctx.Queue()
+        self.q_empty, self.q_ready = mp.SimpleQueue(), mp.SimpleQueue()
         for index, _ in enumerate(self.buffers):
             self.q_empty.put(index)
 
+        # create a state-dict update lock
+        self._update_lock = mp.Lock()
+
         # spawn worker subprocesses (nprocs is world size)
-        p_workers = mp.spawn(
+        p_workers = multiprocessing.start_processes(
             self.collect, nprocs=self.n_actors, daemon=False, join=False,
             # collectors' device may be other than the main device
             args=(self.n_actors, self.sticky, False, None),  # pinned, device
+            start_method=self.start_method
         )
         try:
             while True:
