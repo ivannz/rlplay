@@ -125,6 +125,12 @@ class RolloutSampler:
         if self.close:
             env.close()
 
+        # pre-allocate a nested container for batches in pinned memory
+        self.batch_buffer = torchify(
+            unsafe_apply(*(ref,) * self.n_per_batch,
+                         fn=lambda *x: torch.cat(x, dim=1)),
+            pinned=pinned)
+
     def p_stepper(self, rank):
         # collectors' device may be other than the main device
         return p_stepper(
@@ -139,10 +145,10 @@ class RolloutSampler:
         with self.ctrl.reflock:
             return dst.load_state_dict(src.state_dict(), strict=True)
 
-    def _collate(self, *tensors, out=None, dim=1):
-        """Concatenate tensors along dim=1 and move to device."""
+    def collate_to_(self, out, *tensors):
+        """Concatenate tensors along dim=1 into `out` and move to device."""
         # XXX `out` could be a pinned tensor from a special nested container
-        out = torch.cat(tensors, dim, out=out)
+        torch.cat(tensors, dim=1, out=out)
         return out.to(self.device, non_blocking=True)
 
     def __iter__(self):
@@ -167,14 +173,15 @@ class RolloutSampler:
             while True:
                 # collate ready structured rollout fragments along batch dim=1
                 indices = [self.ctrl.ready.get() for _ in range(self.n_per_batch)]
-                batch = unsafe_apply(*(self.buffers[j] for j in indices),
-                                     fn=self._collate)
+
+                buffers = (self.buffers[j] for j in indices)
+                unsafe_apply(self.batch_buffer, *buffers, fn=self.collate_to_)
 
                 # repurpose buffers for later batches
                 for j in indices:
                     self.ctrl.empty.put(j)
 
-                yield batch
+                yield self.batch_buffer
 
         finally:
             # shutdown workers: we don't care about `ready` indices
