@@ -175,13 +175,14 @@ class RolloutSampler:
                 indices = [self.ctrl.ready.get() for _ in range(self.n_per_batch)]
 
                 buffers = (self.buffers[j] for j in indices)
-                unsafe_apply(self.batch_buffer, *buffers, fn=self.collate_to_)
+                batch = unsafe_apply(self.batch_buffer, *buffers,
+                                     fn=self.collate_to_)
 
                 # repurpose buffers for later batches
                 for j in indices:
                     self.ctrl.empty.put(j)
 
-                yield self.batch_buffer
+                yield batch
 
         finally:
             # shutdown workers: we don't care about `ready` indices
