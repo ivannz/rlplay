@@ -480,7 +480,8 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
         structured_setitem_(out.act, t, npy.act)
         out.rew[t] = npy.rew
         out.fin[t] = npy.fin
-        # structured_setitem_(out.next_obs, t, npy_next_obs)
+        if hasattr(out, 'next_obs'):
+            structured_setitem_(out.next_obs, t, npy_next_obs)
 
     # push the last observation into the special T+1-th slot. This is enough
     # for DQN since obs[t] (x_t) and obs[t+1] (x_{t+1}) are consecutive if
