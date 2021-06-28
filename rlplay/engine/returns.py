@@ -3,13 +3,13 @@ import torch
 
 
 # returns, baselined or not, or advantage estimates are not diff-able in PG
-def np_compute_returns(rew, fin, *, gamma, bootstrap=0.):
+def npy_returns(rew, fin, *, gamma, bootstrap=0.):
     r"""Compute the on-policy returns (the present value of the future rewards).
 
         G_t = r_{t+1} + \gamma r_{t+2} + \gamma^2 r_{t+3} + ...
             = r_{t+1} + \gamma G_{t+1}
     """
-    n_steps, shape = len(rew), rew[-1].shape
+    n_steps, *shape = rew.shape
     G_t = numpy.zeros((1 + n_steps, *shape), dtype=rew[-1].dtype)
 
     # rew[t], fin[t] is r_{t+1} and d_{t+1}
@@ -23,29 +23,7 @@ def np_compute_returns(rew, fin, *, gamma, bootstrap=0.):
     return G_t[:-1]
 
 
-@torch.no_grad()
-def tr_compute_returns(rew, fin, *, gamma, bootstrap=0.):
-    n_steps, *shape = rew.shape
-
-    # G_t = v(s_t) = r_{t+1} + \gamma G_{t+1} 1_{\neg T_{t+1}}
-    # r_{t+1}, s_{t+1} \sim p(r, s, \mid s_t, a_t), a_t \sim \pi(a \mid s_t)
-    # T_{t+1} indicates if $s_{t+1}$ is terminal
-    G_t = rew.new_zeros((1 + n_steps, *shape))
-
-    G_t[-1].copy_(bootstrap)  # bootstrap of \approx (r_{H+k+1})_{k\geq 0}
-    for j in range(1, n_steps + 1):
-        # compute $G_t = r_{t+1} + \gamma G_{t+1}$ for t = L - j
-        # NB G[-j] is G_{t+1} and G[-j-1] is G_t
-
-        # get 1_{\neg T_{t+1}} v(s_{t+1}) \gamma + r_{t+1}
-        G_t[-j-1].copy_(G_t[-j]).mul_(gamma)  # get \hat{G}_{t+1}(\tau) \gamma
-        G_t[-j-1].masked_fill_(fin[-j], 0.)  # reset[-j] means s_{t+1} is terminal
-        G_t[-j-1].add_(rew[-j])  # add the received reward r_{t+1}
-
-    return G_t[:-1]
-
-
-def np_compute_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
+def npy_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
     r"""Compute the Generalized Advantage Estimator (C is `lambda`).
 
         \delta^v_t = r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t)
@@ -54,7 +32,7 @@ def np_compute_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
               + (\gamma \lambda)^2 \delta^v_{t+2} + ...
             = \delta^v_t + \gamma \lambda A_{t+1} 1_{\neg d_{t+1}}
     """
-    n_steps, shape = len(rew), rew[-1].shape
+    n_steps, *shape = rew.shape
 
     gae_t = numpy.zeros((1 + n_steps, *shape), dtype=rew[-1].dtype)
     delta = numpy.zeros(shape, dtype=rew[-1].dtype)
@@ -78,7 +56,7 @@ def np_compute_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
     return gae_t[:-1]
 
 
-def np_compute_vtrace(rew, fin, val, omega, *, gamma, bootstrap, r_bar, c_bar):
+def npy_vtrace(rew, fin, val, omega, *, gamma, bootstrap, r_bar, c_bar):
     r"""Compute the V-trace value estimates ($n \to \infty$ limit):
 
         \delta^v_t = r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t)
@@ -126,3 +104,56 @@ def np_compute_vtrace(rew, fin, val, omega, *, gamma, bootstrap, r_bar, c_bar):
         delta[:] = 0
 
     return v_hat[:-1]
+
+
+@torch.no_grad()
+def pyt_returns(rew, fin, *, gamma, bootstrap=0.):
+    n_steps, *shape = rew.shape
+
+    # G_t = v(s_t) = r_{t+1} + \gamma G_{t+1} 1_{\neg T_{t+1}}
+    # r_{t+1}, s_{t+1} \sim p(r, s, \mid s_t, a_t), a_t \sim \pi(a \mid s_t)
+    # T_{t+1} indicates if $s_{t+1}$ is terminal
+    G_t = rew.new_zeros((1 + n_steps, *shape))
+
+    G_t[-1].copy_(bootstrap)  # bootstrap of \approx (r_{H+k+1})_{k\geq 0}
+    for j in range(1, n_steps + 1):
+        # compute $G_t = r_{t+1} + \gamma G_{t+1}$ for t = L - j
+        # NB G[-j] is G_{t+1} and G[-j-1] is G_t
+
+        # get 1_{\neg T_{t+1}} v(s_{t+1}) \gamma + r_{t+1}
+        G_t[-j-1].copy_(G_t[-j]).mul_(gamma)  # get \hat{G}_{t+1}(\tau) \gamma
+        G_t[-j-1].masked_fill_(fin[-j], 0.)  # reset[-j] means s_{t+1} is terminal
+        G_t[-j-1].add_(rew[-j])  # add the received reward r_{t+1}
+
+    return G_t[:-1]
+
+
+@torch.no_grad()
+def pyt_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
+    n_steps, *shape = rew.shape
+
+    gae_t = rew.new_zeros((1 + n_steps, *shape))
+    delta = numpy.zeros(shape, dtype=rew[-1].dtype)
+    # rew[t], fin[t], val[t] is r_{t+1}, d_{t+1} and v(s_t)
+    # t is -j, t+1 is -j-1 (j=1..T)
+    for j in range(1, n_steps + 1):
+        # \delta_t = r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t)
+        # numpy.multiply(bootstrap, gamma, out=delta)
+        # numpy.putmask(delta, fin[-j], 0.)
+        numpy.multiply(bootstrap, gamma, out=delta, where=~fin[-j])
+        bootstrap = val[-j]  # v(s_t) is next iter's bootstrap
+        delta += rew[-j] - bootstrap
+
+        # A_t = \delta_t + \lambda \gamma A_{t+1} 1_{\neg d_{t+1}}
+        numpy.multiply(gae_t[-j], C * gamma, out=gae_t[-j-1], where=~fin[-j])
+        gae_t[-j-1] += delta
+
+        # reset delta for the next conditional multiply
+        delta[:] = 0
+
+    return gae_t[:-1]
+
+
+@torch.no_grad()
+def pyt_vtrace(rew, fin, val, omega, *, gamma, bootstrap, r_bar, c_bar):
+    raise NotImplementedError
