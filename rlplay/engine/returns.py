@@ -36,6 +36,7 @@ def npy_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
 
     gae_t = numpy.zeros((1 + n_steps, *shape), dtype=rew[-1].dtype)
     delta = numpy.zeros(shape, dtype=rew[-1].dtype)
+
     # rew[t], fin[t], val[t] is r_{t+1}, d_{t+1} and v(s_t)
     # t is -j, t+1 is -j-1 (j=1..T)
     for j in range(1, n_steps + 1):
@@ -122,7 +123,7 @@ def pyt_returns(rew, fin, *, gamma, bootstrap=0.):
 
         # get 1_{\neg T_{t+1}} v(s_{t+1}) \gamma + r_{t+1}
         G_t[-j-1].copy_(G_t[-j]).mul_(gamma)  # get \hat{G}_{t+1}(\tau) \gamma
-        G_t[-j-1].masked_fill_(fin[-j], 0.)  # reset[-j] means s_{t+1} is terminal
+        G_t[-j-1].masked_fill_(fin[-j], 0.)  # fin[-j] means s_{t+1} is terminal
         G_t[-j-1].add_(rew[-j])  # add the received reward r_{t+1}
 
     return G_t[:-1]
@@ -132,24 +133,20 @@ def pyt_returns(rew, fin, *, gamma, bootstrap=0.):
 def pyt_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
     n_steps, *shape = rew.shape
 
-    gae_t = rew.new_zeros((1 + n_steps, *shape))
-    delta = numpy.zeros(shape, dtype=rew[-1].dtype)
+    gae_t, delta = rew.new_zeros((1 + n_steps, *shape)), rew.new_zeros(shape)
     # rew[t], fin[t], val[t] is r_{t+1}, d_{t+1} and v(s_t)
     # t is -j, t+1 is -j-1 (j=1..T)
     for j in range(1, n_steps + 1):
         # \delta_t = r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t)
-        # numpy.multiply(bootstrap, gamma, out=delta)
-        # numpy.putmask(delta, fin[-j], 0.)
-        numpy.multiply(bootstrap, gamma, out=delta, where=~fin[-j])
+        delta.copy_(bootstrap).mul_(gamma)
+        delta.masked_fill_(fin[-j], 0.)
         bootstrap = val[-j]  # v(s_t) is next iter's bootstrap
-        delta += rew[-j] - bootstrap
+        delta.add_(rew[-j]).sub_(bootstrap)  # add r_{t+1} - v(s_t)
 
         # A_t = \delta_t + \lambda \gamma A_{t+1} 1_{\neg d_{t+1}}
-        numpy.multiply(gae_t[-j], C * gamma, out=gae_t[-j-1], where=~fin[-j])
-        gae_t[-j-1] += delta
-
-        # reset delta for the next conditional multiply
-        delta[:] = 0
+        gae_t[-j-1].copy_(gae_t[-j]).mul_(C * gamma)
+        gae_t[-j-1].masked_fill_(fin[-j], 0.)
+        gae_t[-j-1].add_(delta)
 
     return gae_t[:-1]
 
