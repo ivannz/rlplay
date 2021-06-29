@@ -113,30 +113,25 @@ class RolloutSampler:
         # initialize a reference buffer and make its shared copies
         env = factory()  # XXX seed=None here since used only once
 
-        # create torch tensor buffers for trajectory fragments in the shared
-        #  memory using the module copy as a mockup (a single one-element batch
-        #  forward pass).
-        # XXX torch tensors have much simpler pickling/unpickling when sharing
-        #  device = next(self.module.parameters()).device
+        # a single one-element-batch forward pass through the copy
         ref = prepare(env, self.module, n_steps, n_per_actor, device=None)
-        self.buffers = [torchify(ref, shared=True) for _ in range(n_buffers)]
 
         # some environments don't like being closed or deleted, e.g. `nle`
         if self.close:
             env.close()
 
-        # pre-allocate a nested container for batches in pinned memory
+        # pre-allocate a buffer in the pinned memory for collated micro-batches
+        #  (non-paged physical memory for faster host-device transfers)
+        # XXX `torch.cat` with `out=None` always makes allocates a new tensor.
         self.batch_buffer = torchify(
-            unsafe_apply(*(ref,) * self.n_per_batch,
-                         fn=lambda *x: torch.cat(x, dim=1)),
-            pinned=pinned)
+            unsafe_apply(*(ref,) * n_per_batch,
+                         fn=lambda *x: torch.cat(x, dim=1)),  # batch dim!
+            pinned=pinned, shared=False)
 
-    def p_stepper(self, rank):
-        # collectors' device may be other than the main device
-        return p_stepper(
-            rank, self.n_actors, self.ctrl, self.factory, self.buffers,
-            self.module, sticky=self.sticky, close=True, device=None,
-        )
+        # create buffers for trajectory fragments in the shared memory
+        # (shared=True always makes a copy).
+        # XXX torch tensors have much simpler pickling/unpickling when sharing
+        self.buffers = torchify((ref,) * n_buffers, shared=True)
 
     def update_from(self, src, *, dst=None):
         # locking makes parameter updates atomic
@@ -198,3 +193,10 @@ class RolloutSampler:
 
             self.ctrl.empty.close()
             self.ctrl.ready.close()
+
+    def p_stepper(self, rank):
+        # collectors' device may be other than the main device
+        return p_stepper(
+            rank, self.n_actors, self.ctrl, self.factory, self.buffers,
+            self.module, sticky=self.sticky, close=True, device=None,
+        )
