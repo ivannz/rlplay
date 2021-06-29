@@ -51,8 +51,8 @@ Context = namedtuple('Context', ['input', 'hx', 'next_obs'])
 Context.__doc__ = r"""This is a convenience object, that extends `State` by
     an `hx` and a `next_obs` containers of tensors. The first represents the
     persistent context, e.g. the recurrent state, of the actor at the start of
-    a trajectory fragment (rollout). The second stores the next observation
-    $x_{t+1}$ and retains the original data before any reset.
+    a trajectory fragment (rollout). The second stores the original true next
+    observation $x_{t+1}$ before any reset took place.
     """
 
 Fragment = namedtuple('Fragment', ['state', 'actor', 'env', 'bootstrap', 'hx'])
@@ -109,13 +109,16 @@ Fragment.__doc__ = r"""A `T x batch` fragment of the trajectories of the actor
 
 
 def structured_setitem_(dst, index, value):
-    """Recursively set `element[index] = value` in nested container."""
+    """Do `dst[index] = value` in `dst` nested container with values coming
+    from another with IDENTICAL structure.
+    """
     unsafe_apply(dst, value, fn=lambda d, v: d.__setitem__(index, v))
 
 
 def structured_tensor_copy_(dst, src, *, at=None):
-    """Copy tensor data from the `src` nested container into torch tensors of
-    the `dst` nested container at the specified index (int or tuple of ints).
+    """Copy tensor data from the `src` nested container into torch tensors
+    of the `dst` nested container (with IDENTICAL structure) at the specified
+    index (int, tuple of ints, or slices).
     """
     if at is None:
         return unsafe_apply(dst, src, fn=torch.Tensor.copy_)
@@ -124,13 +127,55 @@ def structured_tensor_copy_(dst, src, *, at=None):
 
 
 class BaseActorModule(torch.nn.Module):
-    """Define convenience methods for trajectory fragment collection."""
-    # actor is unaware of the number of environments it interacts with, because
-    #  they are the batch dimension
+    """Define convenience methods for trajectory fragment collection.
+
+    Details
+    -------
+    The actor is unaware of the number of environments it interacts with,
+    and they are communicated through the batch dimension of the input (dim=1).
+
+    Subclassing
+    -----------
+    Actor models derived from this class must not store any reference to env
+    instances, because envs are unlikely to be easily picklable and shareable
+    between subprocesses.
+    """
 
     @torch.no_grad()
     def reset(self, at, hx=None):
-        """Reset the specified pieces of actor's recurrent context `hx`."""
+        """Reset the specified pieces of actor's recurrent context `hx`.
+
+        Parameters
+        ----------
+        at : int, slice
+            The index or range of environments for which to reset the recurrent
+            context.
+
+        hx : nested container of tensors
+            The recurrent state is a container of at least 2d tensors of shape
+            `: x n_envs x ...`, i.e. having `n_envs` as their second dimension.
+            The index or range of environments for which to reset the recurrent
+            context.
+
+        Returns
+        -------
+        hx : nested container of tensors
+            The recurrent state updated in-place.
+
+        Details
+        -------
+        Similar to `torch.nn.LSTM` and other recurrent layers [citation_needed]
+        we assume the initial recurent state to be a ZERO non-differentiable
+        tensor.
+
+        The seemingly awkward shapes of the tensors in `hx` are rooted in the
+        shapes if hiddent states of torch.nn recurrent layers. For example, 
+        the LSTM layer has `hx = (c, h)`, both having shape
+
+            num_layers * num_directions x n_batch x n_hidden
+
+        (with the GRU layer's `hx` is a tensor, not a tuple). This 
+        """
         assert hx is not None
 
         unsafe_apply(hx, fn=lambda x: x[:, at].zero_())
@@ -144,19 +189,43 @@ class BaseActorModule(torch.nn.Module):
 
     @torch.no_grad()
     def value(self, obs, act=None, rew=None, fin=None, *, hx=None):
+        """The value function estimate of the observations in a one-step-long
+        batched input and the recurrent context.
+
+        Details
+        -------
+        This is a special interface method for the rollout collector, used only
+        when a bootstrap value estimate is required in the trajectory fragment.
+        """
         _, _, info = self(obs, act=act, rew=rew, fin=fin, hx=hx)
         return info['value']
 
     @torch.no_grad()
     def step(self, obs, act=None, rew=None, fin=None, *, hx=None):
+        """The model's response to a one-step-long batched input and
+        the recurrent context.
+
+        Details
+        -------
+        This is a special interface method for the rollout collector.
+        """
         return self(obs, act=act, rew=rew, fin=fin, hx=hx)
 
     def forward(self, obs, act=None, rew=None, fin=None, *, hx=None):
         r"""Get $a_t$ and $h_{t+1}$ from $(x_t, a_{t-1}, r_t, d_t)$, and $h_t$.
 
+        Warning
+        -------
+        The shape of the input data is `n_seq x n_batch x ...`, which is
+        consistent with `batch_first=False` setting in torch's recurrent
+        layer.
+
+        The actor MUST NOT update or change the inputs and `hx` in-place, and
+        SHOULD return only newly created tensors.
+
         Parameters
         ----------
-        obs : nested container of tensors with shape (n_envs, ...)
+        obs : nested container of tensors with shape = `n_seq, n_envs, ...`
             The current observations $x_t$ from by a batch of environments. If
             a flag in `fin` is set, then the corresponding observation in $x_t$
             is $x_*$ -- the initial state/observation of an environments after
@@ -164,33 +233,52 @@ class BaseActorModule(torch.nn.Module):
             obtained after taking the previous action $a_{t-1}$ (`act`) in
             the environment: $(s_{t-1}, a_{t-1}) \to (s_t, x_t, r_t, d_t)$.
 
-        act : nested container of tensors with shape (n_envs, ...)
+        act : nested container of tensors with shape = `n_seq, n_envs, ...`
             A batch of the last actions $a_{t-1}$ taken in the environments by
             the actor. Components of `act` MUST be ignored if the corresponding
             flag in `fin` is set, because the associated environment has just
             been reset, and a new trajectory is being rolled out.
 
-        rew : float tensor with shape (n_envs,)
+        rew : float tensor, shape = `n_seq, n_envs,`
             The reward that each environment yielded due to the transition to
             $x_t$ after taking action $a_{t-1}$. Components of `rew` MUST be
             ignored if the corresponding flag in `fin` is set.
 
-        fin : bool tensor with shape (n_envs,)
+        fin : bool tensor, shape = `n_seq, n_envs,`
             The reset flags $d_t$ indicate which of the previous actions in
             `act` and last rewards in `rew` have been invalidated by a reset
             of the corresponding environment. Also indicates if the observation
             $x_t$ is the initial observation $s_*$ after a reset (True), or
             a non-terminal observation $s_t$ (False).
 
-        hx : container of tensors of arbitrary shape
+        hx : container of tensors
             The recurrent context $h_t$, parts of which ought to be reset, if
-            the corresponding flags in `fin` are set. If `None` then it must be
-            initialized anew.
+            the corresponding flags in `fin` are set.
+
+            NOTE: If `None` then it must be initialized ANEW and conform to
+            the batch size of other inputs (see `BaseActorModule.reset` for
+            details). It is recommended to let torch's recurrent layers, .e.g.
+            torch.nn.GRU, handle `hx = None` automatically.
 
         Returns
         -------
-        hx : container of tensors of arbitrary shape
-            The next recurrent context $h_{t+1}$ due to $h_t$ and the inputs.
+        act : nested container of tensors with shape = `n_seq, n_envs, ...`
+            The actions $a_t$ to be taken in the environment in response to
+            the current observations $x_t$ (obs), the previous actions $a_{t-1}$
+            (act), the recently obtained reward $r_t$ (rew), the terminaltion
+            flag $d_t$ (fin), and the recurrent state $h_t$ (hx).
+
+        hx : nested container of tensors
+            The next recurrent context $h_{t+1}$ resulting from $h_t$ and other
+            inputs. The data MUST be returned in NEWLY allocated tensors.
+
+        info : dict of tensor containers, shape = `n_seq, ...`
+            The auxiliary output the model wishes to return, e.g. a nested
+            container of tensors with policy logits (n_seq x n_envs x ...).
+
+            The container MUST include a 'value' key for the value-function
+            estimates (n_seq x n_envs) for the observations $x_t$ in `obs` and
+            conditional on the other inputs.
         """
         raise NotImplementedError
 
@@ -202,12 +290,44 @@ def prepare(
 ):
     """Build the trajectory fragment buffer as a nested container of torch tensors.
 
-    Idea
-    ----
-    Create the data structures as torch tensors residing in pinned memory.
-    Then numpify them.
+    Parameters
+    ----------
+    env : gym.Env
+        The reference environment used to initialize the structure and shapes
+        of observation and action buffer.
 
-    https://pytorch.org/docs/stable/notes/cuda.html#use-pinned-memory-buffers
+    actor : Actor
+        The actor used to initialize the buffers for the recurrent context and
+        auxiliary info for a batch of environments.
+
+    n_steps : int
+        The length of the trajectory fragment (rollout) to be stored in the
+        constructed buffer (dim=0).
+
+    n_envs : int
+        The number of environments in a single buffer (dim=1).
+
+    pinned: bool, default=False
+        The underlying storage of the newly created tensors resides in pinned
+        memory (non-paged) for faster host-device transfers.
+
+        Cannot be used with `shared=True`.
+
+    shared: bool, default=False
+        Allocates the underlying storage of new tensors using torch's memory
+        interprocess memory sharing logic which makes it so that all changes
+        to the data are reflected between all processes.
+
+        Cannot be used with `pinned=True`.
+
+    device : torch.device, or None
+        The device to use when getting the example output from the provided
+        actor.
+
+    Returns
+    -------
+    fragment : nested container of torch tensors
+        The buffer into which the trajectory fragment will be recorded.
     """
     obs_ = env.reset()
 
@@ -265,11 +385,51 @@ def prepare(
 
 @torch.no_grad()
 def startup(envs, actor, buffer, *, pinned=False):
+    """Alias the fragment buffer and allocate aliased running context for
+    rollout collection.
+
+    Parameters
+    ----------
+    envs : list of gym.Env
+        The stateful environments to be reset.
+
+    actor : BaseActorModule
+        The stateful actor, the recurrent context of which is to be reset.
+
+    buffer : Fragment
+        The reference buffer used to gather the specs and the nested structure
+        for the running env-state context.
+
+    pinned: bool, default=False
+        Determines if the underlying storage of newly created tensors for
+        the running env-state context should reside in pinned memory for
+        faster host-device transfers.
+
+    Returns
+    -------
+    ctx : aliased Context
+        The running env-state context which contains properly time synchronised
+        input data for the actor: `.input` is $x_t, a_{t-1}, r_t, d_t$, and
+        `.hx` is $h_t$. The data in the context is aliased, i.e. `.npy` arrays
+        and `.pyt` tensors reference the same underlying data, which allows
+        changes in one be reflected in the other .
+
+    fragment : aliased Fragment
+        The numpy-torch aliased trajectory fragment buffer. It is created in
+        a zero-copy manner, so it also aliases the `buffer` input parameters.
+
+    Details
+    -------
+    The created nested container `context` houses torch tensors, that reside in
+    shared or pinned memory. Only after having been created, the tensors are
+    aliased by numpy arrays (see details in `rlplay.utils.schema.shared`) for
+    zero-copy data interchange.
+    """
     # `fragment` contains [T x B x ?] aliased torch tensors of actor/env
     # infos, trajectory fragment $(x_{t-1}, a_{t-1}, r_t, d_t)_{t=1}^T$,
     # and bootstrap values $v(s_T)$, possibly allocated in torch's shared
     # memory.
-    fragment = aliased(buffer)  # just a copy-free pyt-npy alias
+    fragment = aliased(buffer)  # just a zero-copy pyt-npy alias
 
     # reset the initial recurrent state of the actor, `hx`, to zero
     unsafe_apply(fragment.pyt.hx, fn=torch.Tensor.zero_)
@@ -305,7 +465,9 @@ def startup(envs, actor, buffer, *, pinned=False):
 
 @torch.no_grad()
 def collect(envs, actor, fragment, state, *, sticky=False, device=None):
-    r"""March the actor and the environments in lockstep `n_steps` times.
+    r"""Collect the trajectory fragment (rollout) by marching the actor and
+    the environments, in lockstep (`actor` and `envs`, respectively) updating
+    `state` and recording everything into `fragment`.
 
     Parameters
     ----------
@@ -328,6 +490,10 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
         observation into the trajectory fragment and then stop interacting
         with it until the end of the fragment.
 
+    device : torch.device, or None
+        The device onto which to put the input data ($x_t$ obs, $a_{t-1}$ act,
+        $r_t$ rew, $d_t$ fin, and $h_t$ hx) when steping through the environments.
+
     Details
     -------
     Let $s_t$ be the observed state at time $t$, $a_t$ the action taken at
@@ -335,10 +501,12 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     transition, and $d_{t+1}$ an indicator whether the new state $s_{t+1}$ is
     terminal. Let $s_*$ be the observation just after an environment reset.
     The present value of the reward flow obtained by following the trajectory
-    after the state $s_t$, i.e. $(a_t, s_{t+1}, a_{t+1}, ...)$, is defined as $
+    after the state $s_t$, i.e. $(a_t, s_{t+1}, a_{t+1}, ...)$, is defined as
+    $
         G_t = \sum_{j=t}^{h-1} \gamma^{j-t} r_{j+1} 1_{\neg d_{j+1}}
             + \gamma^{h-t} G_h
-    $ for $h \geq t$ also known as `the t-th return'.
+    $
+    for $h \geq t$ also known as `the t-th return'.
 
     Since the rewards following terminal states are identically zero, because
     the episode has ended, such sates are not actionable, and, hence, there
@@ -364,9 +532,11 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     with $x_{t+1} = s_*$ if $d_{t+1}$, and $s_{t+1}$ otherwise. The subscript
     indices represent the index in the trajectory sequence, while those in
     square brackets represent the corresponding record in the buffer:
+
         out[t] = x_t, a_t, r_{t+1}, d_{t+1}
 
     This non-intuitive indexing notation allows computing the return as
+
         G[j] = out[j].rew + gamma * (1 - out[j].fin) * G[j+1]
 
     for `j=0..T-1` where $G[j] \approx G_j$, and `G[T] = 0` if `out[T-1].fin`
@@ -374,12 +544,16 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     the value function at a non-terminal state $s_T$, when collection is
     interrupted mid-trajectory.
 
-    The value function estimates the present value (returns) $
+    The value function estimates the present value (returns)
+    $
         v(s_t)
             \approx \mathbb{E}_{\tau \sim p \circ \pi} G_t(\tau)
-    $ with $
+    $
+    with
+    $
         \tau = (s_t, a_t, r_{t+1})_{t\geq 0}
-    $ and $T(\tau) = \inf\{t \geq 1 \colon s_t = \times \}$ -- the trajectory
+    $
+    and $T(\tau) = \inf\{t \geq 1 \colon s_t = \times \}$ -- the trajectory
     termination moment.
 
     Implementation
