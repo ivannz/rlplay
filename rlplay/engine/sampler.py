@@ -153,8 +153,11 @@ class RolloutSampler:
 
     def __iter__(self):
         """DOC"""
+        # XXX on the second thought, usin self to store itration and control
+        # context is not a such a good idea (esp. if we recreate the genreator
+        # many times)
         # get the correct multiprocessing context (torch-friendly)
-        mp = multiprocessing.get_context(self.start_method)
+        mp = multiprocessing.get_context(self.start_method)  # mp = self.mp
 
         # setup buffer index queues, and create a state-dict update lock
         # (more reliable than passing tensors around)
@@ -164,8 +167,8 @@ class RolloutSampler:
 
         # spawn worker subprocesses (nprocs is world size)
         p_workers = multiprocessing.start_processes(
-            self.p_stepper, daemon=False, join=False,
-            nprocs=self.n_actors, start_method=self.start_method,
+            self.p_stepper, start_method=self.start_method,
+            daemon=False, join=False, nprocs=self.n_actors,
         )
 
         # fetch for ready trajectory fragments and collate them into a batch
@@ -192,3 +195,6 @@ class RolloutSampler:
                 self.ctrl.empty.put(None)
 
             p_workers.join()
+
+            self.ctrl.empty.close()
+            self.ctrl.ready.close()
