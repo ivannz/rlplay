@@ -2,7 +2,6 @@
 import sys
 import signal
 
-from torch import multiprocessing
 from threading import BrokenBarrierError
 
 import torch
@@ -12,22 +11,11 @@ from copy import deepcopy
 from collections import namedtuple
 
 from .collect import prepare, startup, collect
+from .utils import get_context, CloudpickleSpawner
 from ..utils.schema.shared import Aliased, numpify, torchify
 
 
 Control = namedtuple('Control', ['reflock', 'barrier', 'error'])
-
-
-def get_context(context):
-    from multiprocessing.context import BaseContext
-
-    if isinstance(context, (str, bytes)):
-        context = multiprocessing.get_context(context)
-
-    if not isinstance(context, BaseContext):
-        raise TypeError(f'Unrecognized multiprocessing context `{context}`.')
-
-    return context
 
 
 def p_double(
@@ -188,7 +176,8 @@ def collector(
     # the sync barrier and actor update lock
     ctrl = Control(mp.Lock(), mp.Barrier(2), mp.SimpleQueue())
     p_worker = mp.Process(
-        target=p_double, args=(ctrl, factory, double, shared), daemon=False,
+        target=p_double, daemon=False,
+        args=(ctrl, CloudpickleSpawner(factory), double, shared),
         kwargs=dict(sticky=sticky, close=close, device=device),
     )
     p_worker.start()

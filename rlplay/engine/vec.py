@@ -2,8 +2,6 @@ import sys
 import signal
 import traceback
 
-import cloudpickle
-
 import numpy as np
 import multiprocessing as mp
 
@@ -15,6 +13,8 @@ from gym.spaces import Space
 from gym.vector.utils import batch_space
 
 from collections import namedtuple
+
+from .utils import CloudpickleSpawner
 
 from ..utils.schema import apply_single
 from ..utils.schema.shared import PickleShared
@@ -30,20 +30,6 @@ Endpoint = namedtuple('Endpoint', ['rx', 'tx'])
 
 class TerminateInterrupt(RuntimeError):
     pass
-
-
-class CloudpickleSpawner:
-    def __init__(self, cls, *args, **kwargs):
-        self.cls, self.args, self.kwargs = cls, args, kwargs
-
-    def __call__(self):
-        return self.cls(*self.args, **self.kwargs)
-
-    def __getstate__(self):
-        return cloudpickle.dumps(self.__dict__)
-
-    def __setstate__(self, data):
-        self.__dict__.update(cloudpickle.loads(data))
 
 
 def from_space(space, *leading, ctx=mp):

@@ -2,9 +2,10 @@ import torch
 import numpy
 
 from copy import deepcopy
-from torch import multiprocessing
 from collections import namedtuple
 
+from torch.multiprocessing import start_processes
+from .utils import get_context, CloudpickleSpawner
 from .collect import prepare, startup, collect
 
 from ..utils.schema.base import unsafe_apply
@@ -99,11 +100,11 @@ class RolloutSampler:
         start_method='spawn'
     ):
         """DOC"""
-        self.factory, self.close = factory, close
+        self.factory, self.close = CloudpickleSpawner(factory), close
         self.sticky, self.pinned = sticky, pinned
         self.n_actors, self.device = n_actors, device
         self.n_per_batch = n_per_batch
-        self.start_method = start_method
+        self.mp = self.start_method = start_method
         # self.n_steps, self.n_per_actor, self.n_buffers
 
         # create a host-resident copy of the module in shared memory, which
@@ -151,8 +152,7 @@ class RolloutSampler:
         # XXX on the second thought, usin self to store itration and control
         # context is not a such a good idea (esp. if we recreate the genreator
         # many times)
-        # get the correct multiprocessing context (torch-friendly)
-        mp = multiprocessing.get_context(self.start_method)  # mp = self.mp
+        mp = get_context(self.start_method)
 
         # setup buffer index queues, and create a state-dict update lock
         # (more reliable than passing tensors around)
@@ -161,8 +161,8 @@ class RolloutSampler:
             self.ctrl.empty.put(index)
 
         # spawn worker subprocesses (nprocs is world size)
-        p_workers = multiprocessing.start_processes(
-            self.p_stepper, start_method=self.start_method,
+        p_workers = start_processes(
+            self.p_stepper, start_method=mp._name,
             daemon=False, join=False, nprocs=self.n_actors,
         )
 
