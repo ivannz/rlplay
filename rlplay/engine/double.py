@@ -1,225 +1,104 @@
+# single actor double buffered sampler
+import sys
+import signal
+
+from torch import multiprocessing
+from threading import BrokenBarrierError
+
 import torch
 import numpy
 
+from copy import deepcopy
 from collections import namedtuple
 
-from rlplay.engine.collect import prepare, startup, collect
-from rlplay.engine.collect import BaseActorModule
-from rlplay.engine.returns import np_compute_returns
-
-from rlplay.utils.schema.base import unsafe_apply, apply_single
-from rlplay.utils.schema.shared import aliased, torchify
-from rlplay.utils.common import multinomial
-
-import time
-import gym
-import nle
-from rlplay.engine.vec import CloudpickleSpawner
-
-import torch.multiprocessing as mp
-from threading import BrokenBarrierError
-
-from copy import deepcopy
-
-from functools import wraps
+from .collect import prepare, startup, collect
+from ..utils.schema.shared import Aliased, numpify, torchify
 
 
-class Actor(BaseActorModule):
-    # We should not store references to instantiated env,
-    # since it is about to be communicated to child processes
-    def __init__(self, observation, action):
-        super().__init__()
-
-        # XXX for now we just store the spaces
-        self.observation_space, self.action_space = observation, action
-
-        n_h_dim = 8
-        self.emb_obs = torch.nn.Embedding(observation.n, n_h_dim)
-        self.core = torch.nn.GRU(n_h_dim, n_h_dim, 1)
-        self.policy = torch.nn.Linear(n_h_dim, action.n)
-        self.baseline = torch.nn.Linear(n_h_dim, 1)
-
-    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None):
-        # Everything is  [T x B x ...]
-        n_steps, n_env, *_ = obs.shape
-        input = self.emb_obs(obs)
-
-        # `fin` indicates which of the `act` and `rew` are invalid
-        out, hx = self.core(input, hx)
-        logits = self.policy(out).log_softmax(dim=-1)
-        value = self.baseline(out)[..., 0]
-
-        if self.training:
-            actions = multinomial(logits.exp())
-        else:
-            actions = logits.argmax(dim=-1)
-
-        # rnn states, value estimates, and other info
-        return actions, hx, dict(value=value, logits=logits)
+Control = namedtuple('Control', ['reflock', 'barrier', 'error'])
 
 
-class SimpleActor(BaseActorModule):
-    def __init__(self, observation, action):
-        super().__init__()
+def get_context(context):
+    from multiprocessing.context import BaseContext
 
-        # XXX for now we just store the spaces
-        self.observation_space, self.action_space = observation, action
-        self.emb_obs = torch.nn.Embedding(observation.n, 1 + action.n)
+    if isinstance(context, (str, bytes)):
+        context = multiprocessing.get_context(context)
 
-        self.register_buffer('_counter', torch.zeros(1))
+    if not isinstance(context, BaseContext):
+        raise TypeError(f'Unrecognized multiprocessing context `{context}`.')
 
-    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None):
-        # Everything is  [T x B x ...]
-        n_steps, n_env, *_ = obs.shape
-        out = self.emb_obs(obs)
-
-        policy, value = out[..., 1:], out[..., 0]
-        logits = policy.log_softmax(dim=-1)
-
-        if self.training:
-            actions = multinomial(logits.exp())
-        else:
-            actions = logits.argmax(dim=-1)
-
-        # rnn states, value estimates, and other info
-        return actions, (), dict(value=value, logits=logits)
+    return context
 
 
-class RandomActor(BaseActorModule):
-    # We should not store references to instantiated env,
-    # since it is about to be communicated to child processes
-    def __init__(self, observation, action):
-        super().__init__()
-
-        # XXX for now we just store the spaces
-        self.observation_space, self.action_space = observation, action
-        self.register_buffer('_counter', torch.zeros(1))
-
-    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None):
-        # Everything is [T x B x ...]
-        n_steps, n_envs, *_ = fin.shape
-
-        # `fin` indicates which of the `act` and `rew` are invalid
-        logits = torch.randn(n_steps, n_envs).log_softmax(dim=-1)
-        value = torch.randn(n_steps, n_envs)
-
-        actions = torch.tensor([self.action_space.sample()
-                                for _ in range(n_envs)]*n_steps)
-
-        # rnn states, value estimates, and other info
-        return actions, (), dict(value=value, logits=logits)
-
-
-def update_actor(learner, actor):
-    return actor.load_state_dict(learner.state_dict())
-
-
-@wraps(update_actor)
-def locked_update_actor(learner, actor):
-    # disable rollout collection during actor updates
-    with actor.state_dict_lock_:
-        return update_actor(learner, actor)
-
-
-@wraps(collect)
-def locked_collect(envs, actor, fragment, state, *, sticky=False):
-    # disable actor updates during a rollout collection
-    with actor.state_dict_lock_:
-        return collect(envs, actor, fragment, state, sticky=sticky)
-
-
-WorkerContext = namedtuple('WorkerContext', ['envs', 'actor', 'fragment', 'state'])
-
-
-def worker_context(factory, actor, buffer, *, pin_memory=False):
-    # assert not actor.training
-
-    # initialize the environments
-    n_steps, n_envs = buffer.state.fin.shape
-    envs = [factory() for _ in range(n_envs)]
-
-    # prepare the running state and the output buffer
-    state, fragment = startup(envs, actor, buffer, pinned=pin_memory)
-
-    return WorkerContext(envs, actor, fragment, state)
-
-
-def worker_double(
-    barrier, factory, actors, buffers,
-    *, pin_memory=False, locking=False, sticky=False
+def p_double(
+    ctrl, factory, buffers, ref, *, sticky=False, close=False, device=None
 ):
-    import torch
+    # always pin the runtime context if the device is 'cuda'
+    device = torch.device('cpu') if device is None else device
+    pinned = device.type == 'cuda'
+
+    # disable mutlithreaded computations in the worker processes
     torch.set_num_threads(1)
-    assert len(buffers) == 2
 
-    # initialize the environments
-    context = [worker_context(factory, actor, buffer, pin_memory=pin_memory)
-               for actor, buffer in zip(actors, buffers)]
+    # make an identical local copy of the reference actor on cpu
+    actor = deepcopy(ref).to(device)
 
-    # the bool return value of `collect` controls the loop
-    j, flipflop = 0, 0
-    fn = locked_collect if locking else collect
-    while fn(*context[flipflop], sticky=sticky):
-        # switch to the next fragment buffer
-        j, flipflop = j + 1, 1 - flipflop
+    # prepare local envs and the associated local env-state runtime context
+    n_envs = buffers[0].state.fin.shape[1]  # `fin` is always T x B
+    envs = [factory() for _ in range(n_envs)]  # XXX seed?
+    ctx, fragment = startup(envs, actor, buffers[0], pinned=pinned)
+    # XXX buffers are interchangeable vessels for data, whereas runtime
+    # context is not synchronised to envs and the actor of this worker.
 
-        # indicate that the previous fragment is ready
-        try:
-            barrier.wait()
+    # prepare aliased fragments, buffer-0 is already aliased
+    # XXX `aliased` redundantly traverses `pyt` nested containers,
+    #  but `buffers` are allways torch tensors, so we just numpify them.
+    fragments = fragment, Aliased(numpify(buffers[1]), buffers[1])
 
-        except BrokenBarrierError:
-            # our parent breaks the barrier if it wants us to shutdown
-            break
+    # ctrl.barrier synchronizes `flipflop` between the worker and the parent
+    flipflop = 0
+    try:
+        while True:
+            # collect rollout with an up-to-date actor into the buffer
+            collect(envs, actor, fragments[flipflop], ctx,
+                    sticky=sticky, device=device)
 
-    # this branch is visited only if the while clause evaluates to False, and
-    # never when the loop is broken out of.
-    else:
-        # `collect` aborted the while-loop, let the parent know that something
+            # indicate that the previous fragment is ready
+            ctrl.barrier.wait()
+
+            # ensure consistent parameter update from the shared reference
+            with ctrl.reflock:
+                actor.load_state_dict(ref.state_dict(), strict=True)
+
+            # switch to the next fragment buffer
+            flipflop = 1 - flipflop
+
+    except BrokenBarrierError:
+        # our parent breaks the barrier if it wants us to shutdown
+        pass
+
+    except Exception:
+        from traceback import format_exc
+        ctrl.error.put(format_exc())
+        sys.exit(1)
+
+    finally:
+        # let the parent know that something
         # went wrong with the current buffer by breaking the barrier.
-        barrier.abort()
+        ctrl.barrier.abort()
 
-    # close the environments in states
-    for ctx in context:
-        for env in ctx.envs:
-            pass  # env.close()
-
-    return True
+        # close the environments in states
+        if close:
+            for env in envs:
+                env.close()
 
 
-CollectorContext = namedtuple('CollectorContext', ['actor', 'buffer'])
-
-
-def new_actor(learner, *, update_lock=True):
-    # make a deepcopy of the learner (obv. synchronizes weights)
-    actor = deepcopy(learner)
-
-    # set evaluation mode and move to shared memory (in-place)
-    actor.share_memory()  # .eval()
-
-    # the actor has a shared lock, which mutexes state dict updates
-    if update_lock:
-        actor.state_dict_lock_ = mp.Lock()
-    # XXX not needed if we use actor duplication
-
-    return actor
-
-
-def collector_contexts(env, learner, n_steps, n_envs, *, double=True):
-    # the actors are stale copies of the learner (parameter-wise)
-    actor = new_actor(learner, update_lock=not double)
-    actor_alt = new_actor(learner, update_lock=not double) if double else actor
-    actors = actor, actor_alt
-
-    # create aliased trajectory fragment buffers in the shared memory
-    buffers = [aliased(prepare(env, actor, n_steps, n_envs, shared=True))
-               for actor in actors]
-
-    # bundle actor and aliased fragment together for faster switching
-    return [CollectorContext(a, f) for a, f in zip(actors, buffers)]
-
-
-def collector_double(factory, n_steps, n_envs):
-    r"""
+def collector(
+    factory, module, n_steps, n_envs,
+    *, sticky=False, close=False, device=None,
+    start_method=None
+):
+    r"""UPDATE THE DOC
 
     Details
     -------
@@ -284,187 +163,76 @@ def collector_double(factory, n_steps, n_envs):
         |    ...      ...    |           |    ...      ...    |
 
     """
-    import torch
+    # get the correct multiprocessing context (torch-friendly)
+    mp = get_context(start_method)
 
-    # disable mutlithreaded computations in the child processes
-    torch.set_num_threads(1)
+    # initialize a reference buffer and make its shared copies
+    env = factory()  # XXX seed=None here since used only once
 
-    sticky, pin_memory, double = False, False, True
+    # create a host-resident copy of the module in shared memory, which
+    #  serves as a vessel for updating the actors in workers
+    shared = deepcopy(module).cpu().share_memory()
 
-    # initialize a sample environment and our learner model instance
-    env = factory()
-    learner = RandomActor(env.observation_space, env.action_space)
+    # a single one-element-batch forward pass through the copy
+    ref = prepare(env, shared, n_steps, n_envs, device=None)
 
-    # create two contexts for double buffering
-    contexts = collector_contexts(env, learner, n_steps, n_envs, double=double)
-    # env.close()  # ex. `nle` does not like being closed or deleted
-    # del env
+    # some environments don't like being closed or deleted, e.g. `nle`
+    if close:
+        env.close()
 
-    # prepare the optimizer for the learner
-    learner.train()
-    device_ = torch.device('cpu')  # torch.device('cuda:0')
-    learner.to(device=device_)
-    optim = None  # torch.optim.Adam(learner.parameters(), lr=1e-1)
+    # we use double buffered rollout, with both buffers in the shared memory
+    # (shared=True always makes a copy).
+    # XXX torch tensors have much simpler pickling/unpickling when sharing
+    double = torchify((ref,) * 2, shared=True)
 
-    # print(unsafe_apply(fragment, fn=lambda x: x.shape))
-    # we use `.pyt`, since torch has simpler pickling/unpickling for sharing
-    actors, fragments_pyt = zip(*((ctx.actor, ctx.buffer.pyt)
-                                  for ctx in contexts))
-
-    # the double buffering barrier for syncing interleaving iterations
-    barrier = mp.Barrier(2)
+    # the sync barrier and actor update lock
+    ctrl = Control(mp.Lock(), mp.Barrier(2), mp.SimpleQueue())
     p_worker = mp.Process(
-        target=worker_double, group=None, name=None, daemon=False,
-        args=(barrier, factory, actors, fragments_pyt),
-        kwargs=dict(sticky=sticky, pin_memory=pin_memory, locking=not double),
+        target=p_double, args=(ctrl, factory, double, shared), daemon=False,
+        kwargs=dict(sticky=sticky, close=close, device=device),
     )
     p_worker.start()
 
-    # use proper update mechanism
-    update = locked_update_actor if not double else update_actor
+    # the code flow in the loop below and in the `p_double` is designed to
+    # synchronize `flipflop` between the worker and the parent.
+    flipflop, emergency = 0, False
+    try:
+        while p_worker.is_alive():
+            # ensure consistent update of the shared module
+            # XXX tau-moving average update?
+            with ctrl.reflock:
+                shared.load_state_dict(module.state_dict(), strict=True)
 
-    # we use double buffering: the code flow is designed and the barriers set
-    # up in such a way, that flipflop becomes synchronized between this and the
-    # worker processes.
-    terminate, j, flipflop = False, 0, 0
-    while not terminate:
-        # wait for the current fragment to be ready (w.r.t `flipflop`)
-        try:
-            barrier.wait()
+            # wait for the current fragment to be ready (w.r.t `flipflop`)
+            ctrl.barrier.wait()
 
-        except BrokenBarrierError:
-            # the worker broke the barrier to indicate emergency shutdown
-            break
+            # yield the filled buffer and switch to the next one
+            yield double[flipflop]
+            flipflop = 1 - flipflop
 
-        # get the current fragment and the actor used to collect it
-        ctx = contexts[flipflop]
-        terminate = not do_stuff(j, learner, optim, *ctx, device=device_)
+    except BrokenBarrierError:
+        # the worker broke the barrier to indicate an emergency shutdown
+        emergency = True
 
-        # updating the shared actor should not be followed by heavy
-        #  computations or any io-bound tasks (aside from itself)
-        update(learner, ctx.actor)
+    finally:
+        # we break the barrier, if we wish to shut down the worker
+        ctrl.barrier.abort()
 
-        # switch to the next buffer
-        j, flipflop = j + 1, 1 - flipflop
+        p_worker.join()
+
+    if not emergency:
+        return
+
+    # handle emergency shutdown
+    if not ctrl.error.empty():
+        message = ctrl.error.get()
+
+    elif p_worker.exitcode < 0:
+        message = signal.Signals(-p_worker.exitcode).name
 
     else:
-        # we break the barrier, if we wish to shut down the worker
-        barrier.abort()
+        message = f'worker terminated with exit code {p_worker.exitcode}'
 
-    p_worker.join()
+    ctrl.error.close()
 
-    catted = unsafe_apply(*fragments_pyt, fn=lambda a, b: torch.cat([a, b], dim=1))
-    print(catted)
-    print(all(unsafe_apply(catted, fn=lambda x: (yield x.is_shared()))))
-    print(unsafe_apply(catted, fn=lambda x: x.shape))
-    print(learner._counter)
-    print(unsafe_apply(catted, fn=lambda x: x.numel() * x.element_size()))
-
-
-def do_stuff(j, module, optim, actor, fragment, *, device=None):
-    # do something with the fragment
-    pyt = apply_single(fragment.pyt, fn=lambda t: t.to(device, non_blocking=True))
-    # XXX indeed a non-aliased device-resident copy
-
-    actions, hx, info = module(pyt.state.obs, pyt.state.act,
-                               pyt.state.rew, pyt.state.fin, hx=pyt.hx)
-
-    logits, values = info['logits'], info['value']
-
-    crew = np_compute_returns(
-        fragment.npy.state.rew, fragment.npy.state.fin,
-        gamma=1.0, bootstrap=fragment.npy.bootstrap)
-
-    return j < 1200  # return True
-
-    # log_prob = logits.index_select(-1, actions)
-
-    negent = torch.kl_div(torch.tensor(0.), logits.exp()).sum(dim=-1).mean()
-
-    ell2 = 0.
-
-    optim.zero_grad()
-    (1e-1 * ell2 + 1e-2 * negent).backward()
-    optim.step()
-
-    # time.sleep(0.05)
-    # pass
-
-    return j < 1200  # return True
-
-
-if __name__ == '__main__':
-    import tqdm
-    import torch
-    import numpy
-
-    import gym, nle
-    from rlplay.zoo.env import NarrowPath
-    # from gym_discomaze import RandomDiscoMaze
-    from gym_discomaze.ext import RandomDiscoMazeWithPosition
-    import torch.multiprocessing as mp
-
-    # in the main process
-    # the fragment specs: the number of simultaneous environments
-    #  and the number of steps of one fragment.
-    B, T = 4, 80
-
-    # a pickleable environment factory
-    def factory():
-        # return NarrowPath()
-        return gym.make('NetHackScore-v0')
-        # return gym.make('CartPole-v0').unwrapped
-        # return gym.make('BreakoutNoFrameskip-v4').unwrapped
-        # return gym.make('SpaceInvadersNoFrameskip-v4').unwrapped
-        # return RandomDiscoMaze(10, 10, field=(2, 2))
-        return RandomDiscoMazeWithPosition(10, 10, field=(2, 2))
-
-    collector_double(CloudpickleSpawner(factory), T, B)
-
-    exit(0)
-
-    p_collectors = []
-    for _ in range(8):
-        p = mp.Process(target=collector_double, args=(
-            CloudpickleSpawner(factory), T, B
-        ), daemon=False)
-        p.start()
-        p_collectors.append(p)
-
-    for p in p_collectors:
-        p.join()
-
-    # # initialize a sample environment for our main actor
-    # env = factory()
-    # actor = Actor(env).share_memory()
-
-    # # create an aliased shared buffer for trajectory fragments
-    # fragment = aliased(prepare(env, actor, T, B, shared=True))
-
-    # # the sample env is no longer needed, unless by the actor (unlikely
-    # #  because instantiated env would have to be communicated to child
-    # #  processes).
-    # del env
-
-    # # in a child process we spawn a bunch of environments
-    # # * receive actor and fragment
-    # envs = [factory() for _ in range(B)]
-    # collector = Stepper(actor, envs, n_steps=T,
-    #                     sticky=False, pin_memory=False)
-
-    # collector.set_buffer(fragment.pyt)
-
-    # it, npy = iter(collector), fragment.npy
-    # for j, _ in zip(tqdm.trange(1000), it):
-    #     crew = np_compute_returns(npy.state.rew, npy.state.fin,
-    #                               gamma=1.0, bootstrap=npy.bootstrap)
-
-    #     # crew = np_compute_gae(npy.state.rew, npy.state.fin, npy.actor['value'],
-    #     #                       gamma=1.0, C=0.5, bootstrap=npy.bootstrap)
-    #     pass
-
-    # print(fragment.npy)
-    # print()
-    # print(crew)
-
-    # exit()
+    raise RuntimeError(message)
