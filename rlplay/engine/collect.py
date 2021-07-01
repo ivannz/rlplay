@@ -412,7 +412,10 @@ def startup(envs, actor, buffer, *, pinned=False):
         input data for the actor: `.input` is $x_t, a_{t-1}, r_t, d_t$, and
         `.hx` is $h_t$. The data in the context is aliased, i.e. `.npy` arrays
         and `.pyt` tensors reference the same underlying data, which allows
-        changes in one be reflected in the other .
+        changes in one be reflected in the other.
+
+        Although `.npy` arrays are `n_evs x ...`, while `.pyt` tensors are
+        `1 x n_envs x ...`, but both alias the SAME underlying data storage.
 
     fragment : aliased Fragment
         The numpy-torch aliased trajectory fragment buffer. It is created in
@@ -461,6 +464,62 @@ def startup(envs, actor, buffer, *, pinned=False):
     # anon. torch storage <<--editable unsqueezed view-->> `pyt` torch tensors
     #        ditto        <<--__array__ data aliasing -->> `npy` numpy arrays
     return state, fragment
+
+
+@torch.no_grad()
+def context(*envs, pinned=False):
+    r"""Allocate aliased running context for rollout collection.
+
+    Parameters
+    ----------
+    *envs : gym.Env
+        The environments used to initialize the structure and shapes of
+        observation and action buffers in the context. Determines the number
+        of environments in the context (dim=1).
+
+        WARNING: Each environment is reset AT LEAST once. One environment is
+        stepped through EXACTLY once using one action sampled from its space.
+
+    pinned: bool, default=False
+        The underlying storage of the newly created tensors resides in pinned
+        memory (non-paged) for faster host-device transfers.
+
+    Returns
+    -------
+    ctx : aliased State
+        The running env-state context which contains properly time synchronised
+        input data for the actor $x_t$, $a_{t-1}$, $r_t$, and $d_t$, EXCEPT for
+        the recurrent state $h_t$.
+        See docs of `startup` for details of `ctx` aliasing.
+
+    Details
+    -------
+    This is a version of `startup()`, specialized for actor-less context
+    initialization.
+    """
+
+    env = envs[0]
+
+    # prepare the running context from data some environment, which is reset.
+    obs_ = env.reset()
+    act_ = env.action_space.sample()
+    _, rew_, fin_, _ = env.step(act_)
+
+    # ensure correct data types for `rew_` (to float32) and `fin_` (to bool)
+    state_ = State(obs_, act_, numpy.float32(rew_), bool(fin_))
+
+    # torchify and alias, then add unit-time dim to `.pyt` in-place
+    state = aliased(torchify(state_, len(envs), pinned=pinned, copy=True))
+    unsafe_apply(state.pyt, fn=lambda x: x.unsqueeze_(0))
+
+    # Flag the state as having just been reset, meaning that the previous
+    #  reward and action are invalid.
+    state.npy.fin[:] = True
+    state.npy.rew[:] = 0.  # zero `.rew`, leave `.act` undefined
+    for j, env in enumerate(envs):
+        structured_setitem_(state.npy.obs, j, env.reset())  # x_0 = s_*
+
+    return state
 
 
 @torch.no_grad()
@@ -591,9 +650,12 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     if device is not None:
         pyt_, hx = unsafe_apply((pyt_, hx), fn=lambda x: x.to(device))
 
+    # copy the `n_overlap` records from the last fragment to the beginning
+    #  of the current fragment
+    n_overlap = 0
     # XXX stepper uses a single actor for a batch of environments:
     # * one mode of exploration, poor randomness
-    for t in range(len(out.fin)):
+    for t in range(n_overlap, len(out.fin)):  # `fin` is (T + H) x B
         # copy $s_t$ to out[t]
         structured_setitem_(out.obs, t, npy.obs)
 
@@ -657,6 +719,9 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
         if hasattr(out, 'next_obs'):
             structured_setitem_(out.next_obs, t, npy_next_obs)
 
+    # write back the most recent recurrent state for the next rollout
+    structured_tensor_copy_(state.pyt.hx, hx)
+
     # push the last observation into the special T+1-th slot. This is enough
     # for DQN since obs[t] (x_t) and obs[t+1] (x_{t+1}) are consecutive if
     # fin[t] is False (d_{t+1}=\bot), and DQN methods ignore the target q-value
@@ -667,8 +732,5 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     if hasattr(fragment.pyt, 'bootstrap'):
         bootstrap = actor.value(pyt.obs, pyt.act, pyt.rew, pyt.fin, hx=hx)
         structured_tensor_copy_(fragment.pyt.bootstrap, bootstrap)
-
-    # write back the most recent recurrent state for the next rollout
-    structured_tensor_copy_(state.pyt.hx, hx)
 
     return True
