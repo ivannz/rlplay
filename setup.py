@@ -3,7 +3,7 @@ from setuptools import setup
 setup(
     name='RLPlay',
     description="""Some prototypes for RL and toy experiments.""",
-    version='0.3',
+    version='0.4',
     license='MIT',
     packages=[
         'rlplay',
@@ -16,7 +16,8 @@ setup(
         'rlplay.utils.plotting',  # custom imshow, conv2d visualizer and other
         'rlplay.utils.integration',  # patches to various other pacakges
         'rlplay.utils.schema',  # dict-list-tuple nested structures
-        'rlplay.engine',  # returns, andvantages, rollout fragment collectors
+        'rlplay.engine',  # returns, andvantages, and rollout
+        'rlplay.engine.rollout',  # rollout fragment collectors
     ],
     install_requires=[
         'torch',
