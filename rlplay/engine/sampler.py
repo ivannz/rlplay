@@ -16,8 +16,8 @@ Control = namedtuple('Control', ['reflock', 'empty', 'ready'])
 
 
 def p_stepper(
-    rk, ws, ctrl, factory, buffers, ref,
-    *, sticky=False, close=True, device=None
+    rk, ws, ctrl, factory, buffers, shared,
+    sticky=False, close=True, device=None
 ):
     r"""Trajectory fragment collection subprocess.
 
@@ -49,7 +49,7 @@ def p_stepper(
         return
 
     # make an identical local copy of the reference actor on cpu
-    actor = deepcopy(ref).to(device)
+    actor = deepcopy(shared).to(device)
 
     # prepare local envs and the associated local env-state runtime context
     n_envs = buffers[ix].state.fin.shape[1]  # `fin` is always T x B
@@ -64,7 +64,7 @@ def p_stepper(
         while ix is not None:
             # ensure consistent parameter update from the shared reference
             with ctrl.reflock:
-                actor.load_state_dict(ref.state_dict(), strict=True)
+                actor.load_state_dict(shared.state_dict(), strict=True)
                 # XXX tau-moving average update?
 
             # XXX `aliased` redundantly traverses `pyt` nested containers, but
@@ -88,115 +88,100 @@ def p_stepper(
                 env.close()
 
 
-class RolloutSampler:
-    def __init__(
-        self, factory, module, n_steps=20,
-        # number of actors and environments each interacts with
-        n_actors=8, n_per_actor=2,
-        # the size of the rollout buffer pool (must have spare buffers)
-        n_buffers=16, n_per_batch=4,
-        *,
-        sticky=False, pinned=False, close=False, device=None,
-        start_method='spawn'
-    ):
-        """DOC"""
-        self.factory, self.close = CloudpickleSpawner(factory), close
-        self.sticky, self.pinned = sticky, pinned
-        self.n_actors, self.device = n_actors, device
-        self.n_per_batch = n_per_batch
-        self.mp = self.start_method = start_method
-        # self.n_steps, self.n_per_actor, self.n_buffers
+def rollout(
+    factory,
+    actor,
+    n_steps,
+    # number of actors and environments each interacts with
+    n_actors=8,
+    n_per_actor=2,
+    # the size of the rollout buffer pool (must have spare buffers)
+    n_buffers=16,
+    n_per_batch=4,
+    *, sticky=False, pinned=False, close=False, device=None, start_method=None
+):
+    # get the correct multiprocessing context (torch-friendly)
+    mp = get_context(start_method)
 
-        # create a host-resident copy of the module in shared memory, which
-        #  serves as a vessel for updating the actors in workers
-        self.module = deepcopy(module).cpu().share_memory()
+    # initialize a reference buffer and make its shared copies
+    env = factory()  # XXX seed=None here since used only once
 
-        # initialize a reference buffer and make its shared copies
-        env = factory()  # XXX seed=None here since used only once
+    # create a host-resident copy of the module in shared memory, which
+    #  serves as a vessel for updating the actors in workers
+    shared = deepcopy(actor).cpu().share_memory()
 
-        # a single one-element-batch forward pass through the copy
-        ref = prepare(env, self.module, n_steps, n_per_actor, device=None)
+    # a single one-element-batch forward pass through the copy
+    ref = prepare(env, shared, n_steps, n_per_actor, device=None)
 
-        # some environments don't like being closed or deleted, e.g. `nle`
-        if self.close:
-            env.close()
+    # some environments don't like being closed or deleted, e.g. `nle`
+    if close:
+        env.close()
 
-        # pre-allocate a buffer in the pinned memory for collated micro-batches
-        #  (non-paged physical memory for faster host-device transfers)
-        # XXX `torch.cat` with `out=None` always makes allocates a new tensor.
-        self.batch_buffer = torchify(
-            unsafe_apply(*(ref,) * n_per_batch,
-                         fn=lambda *x: torch.cat(x, dim=1)),  # batch dim!
-            pinned=pinned, shared=False)
+    # pre-allocate a buffer in the pinned memory for collated micro-batches
+    #  (non-paged physical memory for faster host-device transfers)
+    # XXX `torch.cat` with `out=None` always makes allocates a new tensor.
+    batch_buffer = torchify(
+        unsafe_apply(*(ref,) * n_per_batch,
+                     fn=lambda *x: torch.cat(x, dim=1)),  # batch dim!
+        pinned=pinned, shared=False)
 
-        # create buffers for trajectory fragments in the shared memory
-        # (shared=True always makes a copy).
-        # XXX torch tensors have much simpler pickling/unpickling when sharing
-        self.buffers = torchify((ref,) * n_buffers, shared=True)
+    # create buffers for trajectory fragments in the shared memory
+    # (shared=True always makes a copy).
+    # XXX torch tensors have much simpler pickling/unpickling when sharing
+    buffers = torchify((ref,) * n_buffers, shared=True)
 
-    def update_from(self, src, *, dst=None):
-        # locking makes parameter updates atomic
-        # XXX randomly partial updates might inject beneficial stochasticity
-        dst = self.module if dst is None else dst
-        with self.ctrl.reflock:
-            return dst.load_state_dict(src.state_dict(), strict=True)
-
-    def collate_to_(self, out, *tensors):
+    # we define a local function for moving data around
+    def collate_and_move(self, out, *tensors, _device=device):
         """Concatenate tensors along dim=1 into `out` and move to device."""
         # XXX `out` could be a pinned tensor from a special nested container
         torch.cat(tensors, dim=1, out=out)
-        return out.to(self.device, non_blocking=True)
+        return out.to(_device, non_blocking=True)
 
-    def __iter__(self):
-        """DOC"""
-        # XXX on the second thought, usin self to store itration and control
-        # context is not a such a good idea (esp. if we recreate the genreator
-        # many times)
-        mp = get_context(self.start_method)
+    # setup buffer index queues, and create a state-dict update lock, which
+    #  makes `actor ->> shared` updates atomic
+    # XXX randomly partial updates might inject beneficial stochasticity
+    ctrl = Control(mp.Lock(), mp.SimpleQueue(), mp.SimpleQueue())
+    for index, _ in enumerate(buffers):
+        ctrl.empty.put(index)
 
-        # setup buffer index queues, and create a state-dict update lock
-        # (more reliable than passing tensors around)
-        self.ctrl = Control(mp.Lock(), mp.SimpleQueue(), mp.SimpleQueue())
-        for index, _ in enumerate(self.buffers):
-            self.ctrl.empty.put(index)
-
-        # spawn worker subprocesses (nprocs is world size)
-        p_workers = start_processes(
-            self.p_stepper, start_method=mp._name,
-            daemon=False, join=False, nprocs=self.n_actors,
-        )
-
-        # fetch for ready trajectory fragments and collate them into a batch
-        try:
-            while True:
-                # collate ready structured rollout fragments along batch dim=1
-                indices = [self.ctrl.ready.get() for _ in range(self.n_per_batch)]
-
-                buffers = (self.buffers[j] for j in indices)
-                batch = unsafe_apply(self.batch_buffer, *buffers,
-                                     fn=self.collate_to_)
-
-                # repurpose buffers for later batches
-                for j in indices:
-                    self.ctrl.empty.put(j)
-
-                yield batch
-
-        finally:
-            # shutdown workers: we don't care about `ready` indices
-            # * closing the empty queue doesn't register
-            # * can only put None-s
-            for _ in range(self.n_actors):
-                self.ctrl.empty.put(None)
-
-            p_workers.join()
-
-            self.ctrl.empty.close()
-            self.ctrl.ready.close()
-
-    def p_stepper(self, rank):
+    # spawn worker subprocesses (nprocs is world size)
+    p_workers = start_processes(
+        p_stepper, start_method=mp._name, daemon=False, nprocs=n_actors,
         # collectors' device may be other than the main device
-        return p_stepper(
-            rank, self.n_actors, self.ctrl, self.factory, self.buffers,
-            self.module, sticky=self.sticky, close=True, device=None,
-        )
+        join=False, args=(
+            n_actors, ctrl, CloudpickleSpawner(factory), buffers, shared,
+            sticky, True, None
+        ))
+
+    # fetch for ready trajectory fragments and collate them into a batch
+    try:
+        while True:
+            # collate ready structured rollout fragments along batch dim=1
+            indices = [ctrl.ready.get() for _ in range(n_per_batch)]
+
+            # we collate the buffers before releasing the buffers
+            ready = (buffers[j] for j in indices)
+            batch = unsafe_apply(batch_buffer, *ready, fn=collate_and_move)
+
+            # repurpose buffers for later batches
+            for j in indices:
+                ctrl.empty.put(j)
+
+            yield batch
+
+            # ensure consistent update of the shared module
+            # XXX tau-moving average update?
+            with ctrl.reflock:
+                shared.load_state_dict(actor.state_dict(), strict=True)
+
+    finally:
+        # shutdown workers: we don't care about `ready` indices
+        # * closing the empty queue doesn't register
+        # * can only put None-s
+        for _ in range(n_actors):
+            ctrl.empty.put(None)
+
+        p_workers.join()
+
+        ctrl.empty.close()
+        ctrl.ready.close()

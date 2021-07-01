@@ -736,6 +736,7 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     return True
 
 
+@torch.no_grad()
 def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     """Evaluate the actor module in the environment.
 

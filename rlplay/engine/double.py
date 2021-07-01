@@ -19,7 +19,7 @@ Control = namedtuple('Control', ['reflock', 'barrier', 'error'])
 
 
 def p_double(
-    ctrl, factory, buffers, ref, *, sticky=False, close=False, device=None
+    ctrl, factory, buffers, shared, *, sticky=False, close=False, device=None
 ):
     # always pin the runtime context if the device is 'cuda'
     device = torch.device('cpu') if device is None else device
@@ -29,7 +29,7 @@ def p_double(
     torch.set_num_threads(1)
 
     # make an identical local copy of the reference actor on cpu
-    actor = deepcopy(ref).to(device)
+    actor = deepcopy(shared).to(device)
 
     # prepare local envs and the associated local env-state runtime context
     n_envs = buffers[0].state.fin.shape[1]  # `fin` is always T x B
@@ -56,7 +56,7 @@ def p_double(
 
             # ensure consistent parameter update from the shared reference
             with ctrl.reflock:
-                actor.load_state_dict(ref.state_dict(), strict=True)
+                actor.load_state_dict(shared.state_dict(), strict=True)
 
             # switch to the next fragment buffer
             flipflop = 1 - flipflop
@@ -81,8 +81,8 @@ def p_double(
                 env.close()
 
 
-def collector(
-    factory, module, n_steps, n_envs,
+def rollout(
+    factory, actor, n_steps, n_envs,
     *, sticky=False, close=False, device=None,
     start_method=None
 ):
@@ -159,7 +159,7 @@ def collector(
 
     # create a host-resident copy of the module in shared memory, which
     #  serves as a vessel for updating the actors in workers
-    shared = deepcopy(module).cpu().share_memory()
+    shared = deepcopy(actor).cpu().share_memory()
 
     # a single one-element-batch forward pass through the copy
     ref = prepare(env, shared, n_steps, n_envs, device=None)
@@ -190,7 +190,7 @@ def collector(
             # ensure consistent update of the shared module
             # XXX tau-moving average update?
             with ctrl.reflock:
-                shared.load_state_dict(module.state_dict(), strict=True)
+                shared.load_state_dict(actor.state_dict(), strict=True)
 
             # wait for the current fragment to be ready (w.r.t `flipflop`)
             ctrl.barrier.wait()
