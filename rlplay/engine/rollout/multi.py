@@ -134,7 +134,7 @@ def rollout(
     buffers = torchify((ref,) * n_buffers, shared=True)
 
     # we define a local function for moving data around
-    def collate_and_move(self, out, *tensors, _device=device):
+    def collate_and_move(out, *tensors, _device=device):
         """Concatenate tensors along dim=1 into `out` and move to device."""
         # XXX `out` could be a pinned tensor from a special nested container
         torch.cat(tensors, dim=1, out=out)
