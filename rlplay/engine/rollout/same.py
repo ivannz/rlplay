@@ -1,8 +1,8 @@
 import torch
 import numpy
 
-from .base import prepare, startup, collect
-from ..utils.schema.base import unsafe_apply
+from ..base import prepare, startup, collect
+from ...utils.schema.base import unsafe_apply
 
 
 def rollout(envs, actor, n_steps=51, *, sticky=False, device=None):
