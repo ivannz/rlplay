@@ -730,7 +730,9 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
 
     # compute the bootstrapped value estimate for each env
     if hasattr(fragment.pyt, 'bootstrap'):
-        bootstrap = actor.value(pyt.obs, pyt.act, pyt.rew, pyt.fin, hx=hx)
+        if pyt_ is not pyt:
+            structured_tensor_copy_(pyt_, pyt)
+        bootstrap = actor.value(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
         structured_tensor_copy_(fragment.pyt.bootstrap, bootstrap)
 
     return True
