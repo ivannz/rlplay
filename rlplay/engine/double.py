@@ -34,14 +34,14 @@ def p_double(
     # prepare local envs and the associated local env-state runtime context
     n_envs = buffers[0].state.fin.shape[1]  # `fin` is always T x B
     envs = [factory() for _ in range(n_envs)]  # XXX seed?
-    ctx, fragment = startup(envs, actor, buffers[0], pinned=pinned)
+    ctx, fragment0 = startup(envs, actor, buffers[0], pinned=pinned)
     # XXX buffers are interchangeable vessels for data, whereas runtime
     # context is not synchronised to envs and the actor of this worker.
 
     # prepare aliased fragments, buffer-0 is already aliased
     # XXX `aliased` redundantly traverses `pyt` nested containers,
     #  but `buffers` are allways torch tensors, so we just numpify them.
-    fragments = fragment, Aliased(numpify(buffers[1]), buffers[1])
+    fragments = fragment0, Aliased(numpify(buffers[1]), buffers[1])
 
     # ctrl.barrier synchronizes `flipflop` between the worker and the parent
     flipflop = 0
