@@ -5,8 +5,8 @@ from copy import deepcopy
 from collections import namedtuple
 
 from torch.multiprocessing import start_processes
+from .base import prepare, startup, collect
 from .utils import get_context, CloudpickleSpawner
-from .collect import prepare, startup, collect
 
 from ..utils.schema.base import unsafe_apply
 from ..utils.schema.shared import Aliased, numpify, torchify

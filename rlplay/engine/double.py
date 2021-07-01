@@ -10,7 +10,7 @@ import numpy
 from copy import deepcopy
 from collections import namedtuple
 
-from .collect import prepare, startup, collect
+from .base import prepare, startup, collect
 from .utils import get_context, CloudpickleSpawner
 from ..utils.schema.shared import Aliased, numpify, torchify
 
