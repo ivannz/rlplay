@@ -5,6 +5,8 @@ from copy import deepcopy
 from collections import namedtuple
 
 from torch.multiprocessing import start_processes
+from queue import Empty as QueueEmpty
+
 from ..base import prepare, startup, collect
 from ..utils import get_context, CloudpickleSpawner
 
@@ -98,7 +100,8 @@ def rollout(
     # the size of the rollout buffer pool (must have spare buffers)
     n_buffers=16,
     n_per_batch=4,
-    *, sticky=False, pinned=False, close=False, device=None, start_method=None
+    *, sticky=False, pinned=False, close=False, device=None,
+    start_method=None, timeout=10,
 ):
     # get the correct multiprocessing context (torch-friendly)
     mp = get_context(start_method)
@@ -140,7 +143,7 @@ def rollout(
     # setup buffer index queues, and create a state-dict update lock, which
     #  makes `actor ->> shared` updates atomic
     # XXX randomly partial updates might inject beneficial stochasticity
-    ctrl = Control(mp.Lock(), mp.SimpleQueue(), mp.SimpleQueue())
+    ctrl = Control(mp.Lock(), mp.Queue(), mp.Queue())
     for index, _ in enumerate(buffers):
         ctrl.empty.put(index)
 
@@ -157,7 +160,8 @@ def rollout(
     try:
         while True:
             # collate ready structured rollout fragments along batch dim=1
-            indices = [ctrl.ready.get() for _ in range(n_per_batch)]
+            indices = [ctrl.ready.get(timeout=timeout)
+                       for _ in range(n_per_batch)]
 
             # we collate the buffers before releasing the buffers
             ready = (buffers[j] for j in indices)
@@ -174,6 +178,9 @@ def rollout(
             with ctrl.reflock:
                 shared.load_state_dict(actor.state_dict(), strict=True)
 
+    except QueueEmpty:
+        pass
+
     finally:
         # shutdown workers: we don't care about `ready` indices
         # * closing the empty queue doesn't register
@@ -181,7 +188,9 @@ def rollout(
         for _ in range(n_actors):
             ctrl.empty.put(None)
 
-        p_workers.join()
+        # `start_processes` loops on `.join` until it returns True or raises
+        while not p_workers.join():
+            pass
 
         ctrl.empty.close()
         ctrl.ready.close()
