@@ -734,3 +734,94 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
         structured_tensor_copy_(fragment.pyt.bootstrap, bootstrap)
 
     return True
+
+
+def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
+    """Evaluate the actor module in the environment.
+
+    Parameters
+    ----------
+    envs : list of gym.Env
+        The evaluation environments to step through.
+
+    actor : BaseActorModule
+        The stateful actor, the recurrent context of which is to be reset.
+
+    n_steps : int, default=None
+        The maximum nuber of steps to take in each test environment. If `None`,
+        then the limit is lifted.
+
+    render : bool, default=False
+        Whether to render the visuzlization of the envronment interaction.
+
+        WARNING: can only be used in len(envs) == 1
+
+    device : torch.device, default=None
+        The device onto which to put the input data ($x_t$ obs, $a_{t-1}$ act,
+        $r_t$ rew, $d_t$ fin, and $h_t$ hx) for the actor when steping through
+        the test environments.
+
+    Returns
+    -------
+    rewards : numpy.array
+        The sum of the obtained rewards accumulated during the rollout in each
+        test environment.
+
+    Details
+    -------
+    This function is very similar to `collect()`, except that it does not
+    record the rollout data, except for the rewards from the environment.
+    """
+
+    n_steps = n_steps or float('+inf')
+    assert len(envs) == 1 or len(envs) > 1 and not render
+
+    # always pin the runtime context if the device is 'cuda'
+    device = torch.device('cpu') if device is None else device
+    pinned = device.type == 'cuda'
+
+    # prepare a for the specified number of envs running context
+    ctx = context(*envs, pinned=pinned)
+
+    # fast access to context's aliases
+    npy, pyt, hx = ctx.npy, ctx.pyt, None
+
+    # Allocate on-device context and recurrent state, if device is not None
+    pyt_ = pyt
+    if device is not None:
+        pyt_ = unsafe_apply(pyt_, fn=lambda x: x.to(device))
+
+    # render ony in case of a single-env evaluation
+    fn_render = envs[0].render if len(envs) == 1 and render else lambda: True
+
+    rewards, done, t = [], False, 0
+    while not done and t < n_steps and fn_render():
+        # move the updated context to its device-resident copy
+        if pyt_ is not pyt:
+            structured_tensor_copy_(pyt_, pyt)
+
+        # actor's step: commit `a_t` into the running context
+        act_, hx, _ = actor.step(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
+        structured_tensor_copy_(pyt.act, act_)
+
+        # `.step` through a batch of envs
+        for j, env in enumerate(envs):
+            # ease interacting with terminated envs
+            if npy.fin[j] and t > 0:
+                npy.rew[j] = 0.
+                continue
+
+            # env's step: commit $x_{t+1}$, $r_{t+1}$, and $d_{t+1}$
+            obs_, rew_, fin_, info_env = env.step(npy.act[j])
+
+            structured_setitem_(npy.obs, j, obs_)
+            npy.rew[j], npy.fin[j] = rew_, fin_
+
+        # stop only if all environments have been terminated
+        done = numpy.all(npy.fin)
+
+        # track rewards only
+        rewards.append(npy.rew.copy())
+        t += 1
+
+    return numpy.stack(rewards, axis=0)
