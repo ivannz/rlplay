@@ -7,7 +7,7 @@ def get_context(context):
     """Get the correct multiprocessing context (torch-friendly)"""
     from multiprocessing.context import BaseContext
 
-    if isinstance(context, (str, bytes)):
+    if isinstance(context, (str, bytes)) or context is None:
         context = multiprocessing.get_context(context)
 
     if not isinstance(context, BaseContext):
