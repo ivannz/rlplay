@@ -4,14 +4,11 @@ import time
 import gym
 # import nle
 
-from rlplay.engine.sampler import RolloutSampler
+from rlplay.engine.rollout.multi import rollout
+from rlplay.engine.base import BaseActorModule
 
-from rlplay.engine.collect import BaseActorModule
-from rlplay.utils.schema.base import unsafe_apply
-
-from rlplay.engine.returns import np_compute_returns
+from rlplay.engine.returns import npy_returns
 from rlplay.utils.common import multinomial
-from rlplay.engine.vec import CloudpickleSpawner
 
 
 class Actor(BaseActorModule):
@@ -110,7 +107,7 @@ if __name__ == '__main__':
     # in the main process
     # the fragment specs: the number of simultaneous environments
     #  and the number of steps of one fragment.
-    B, T = 2, 80
+    T, B = 80, 2
 
     # a pickleable environment factory
     def factory():
@@ -133,17 +130,27 @@ if __name__ == '__main__':
     # prepare the optimizer for the learner
     optim = None  # torch.optim.Adam(learner.parameters(), lr=1e-1)
 
-    rollout = RolloutSampler(
-        CloudpickleSpawner(factory), learner,
-        n_steps=T, n_actors=2, n_per_actor=B, n_buffers=16, n_per_batch=4,
-        sticky=True,
+    it = rollout(
+        factory,
+        learner,
+        # number of actors and environments each interacts with
+        n_steps=T,
+        n_actors=8,
+        n_per_actor=B,
+        # # the size of the rollout buffer pool (must have spare buffers)
+        n_buffers=16,
+        n_per_batch=4,
+
+        sticky=False,
         pinned=False,
         close=False,
         device=device_,
+        start_method='fork',
+        timeout=10,
     )
 
     import tqdm
-    for j, batch in enumerate(tqdm.tqdm(rollout)):
+    for j, batch in enumerate(tqdm.tqdm(it)):
         # batch = aliased(batch)
         actions, hx, info = learner(batch.state.obs, batch.state.act,
                                     batch.state.rew, batch.state.fin,
@@ -168,13 +175,13 @@ if __name__ == '__main__':
         # (1e-1 * ell2 + 1e-2 * negent).backward()
         # optim.step()
 
-        rollout.update_from(learner)
-        # rollout.update(learner)
-
-        if j > 120:
+        if j > 1200:
             break
 
+    it.close()
+
     print(batch, actions, hx, info, learner._counter)
+
     exit(0)
 
     # collector_queue(, T, B, 8, 24, 4)
