@@ -203,6 +203,20 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
 static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     int safe = 1;
+    PyObject *callable = NULL, *main = NULL;
+
+    Py_ssize_t len = PyTuple_Size(args);
+    PyObject *first = PyTuple_GetSlice(args, 0, 2);
+    PyObject *rest = PyTuple_GetSlice(args, 2, len);
+
+    int parsed = PyArg_ParseTuple(first, "OO|:apply", &callable, &main);
+    Py_DECREF(first);
+    if (!parsed) return NULL;
+
+    if(!PyCallable_Check(callable)) {
+        PyErr_SetString(PyExc_TypeError, "The first argument must be a callable.");
+        return NULL;
+    }
 
     if (kwargs) {
         PyObject *empty = PyTuple_New(0);
@@ -216,20 +230,7 @@ static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
         if (!parsed) return NULL;
     }
 
-    PyObject *result = NULL;
-    Py_ssize_t len = PyTuple_Size(args);
-    PyObject *callable = PyTuple_GetItem(args, 0);
-    // Py_INCREF(callable);
-
-    if(!PyCallable_Check(callable)) {
-        PyErr_SetObject(PyExc_TypeError, callable);
-        return NULL;
-    }
-
-    PyObject *main = PyTuple_GetItem(args, 1);
-    PyObject *rest = PyTuple_GetSlice(args, 2, len);
-
-    result = _apply(callable, main, rest, safe);
+    PyObject *result = _apply(callable, main, rest, safe);
     Py_DECREF(rest);
 
     return result;
