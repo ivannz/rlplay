@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, Extension
 
 setup(
     name='RLPlay',
@@ -25,5 +25,14 @@ setup(
         'gym[atari]',
         'opencv-python',
         # 'pyglet',  # installed by gym anyway, but we still declare it here
-    ]
+    ],
+    ext_modules=[
+        Extension(
+            "rlplay.utils.schema._apply", [
+                "rlplay/engine/apply.cpp",
+            ], extra_compile_args=[
+                "-O3", "-Ofast"
+            ], language="c++",
+        ),
+    ],
 )
