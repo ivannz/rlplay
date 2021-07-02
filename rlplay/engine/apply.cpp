@@ -4,11 +4,11 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
 
 static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
 {
-    PyObject *output = PyDict_New();
+    PyObject *output = PyDict_New(), *result = NULL;
     if(output == NULL) return NULL;
 
     Py_ssize_t j, p = 0, len = PyTuple_Size(rest);
-    PyObject *key, *main_, *dict_, *item_, *rest_ = PyTuple_New(len);
+    PyObject *key, *main_, *item_, *rest_ = PyTuple_New(len);
     while (PyDict_Next(main, &p, &key, &main_)) {
         for(j = 0; j < len; j++) {
             item_ = PyDict_GetItem(PyTuple_GET_ITEM(rest, j), key);
@@ -17,12 +17,13 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        PyObject *result = _apply(callable, main_, rest_, safe);
+        result = _apply(callable, main_, rest_, safe);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
             return NULL;
         }
+
         PyDict_SetItem(output, key, result);
         Py_DECREF(result);
     }
@@ -35,7 +36,7 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
 static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
 {
     Py_ssize_t numel = PyTuple_Size(main);
-    PyObject *output = PyTuple_New(numel);
+    PyObject *output = PyTuple_New(numel), *result = NULL;
     if(output == NULL) return NULL;
 
     Py_ssize_t j, p, len = PyTuple_Size(rest);
@@ -49,12 +50,13 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        PyObject *result = _apply(callable, main_, rest_, safe);
+        result = _apply(callable, main_, rest_, safe);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
             return NULL;
         }
+
         PyTuple_SET_ITEM(output, p, result);
     }
 
@@ -63,16 +65,16 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
     if(PyTuple_CheckExact(main))
         return output;
 
-    PyObject *result = Py_TYPE(main)->tp_new(Py_TYPE(main), output, NULL);
+    PyObject *namedtuple = Py_TYPE(main)->tp_new(Py_TYPE(main), output, NULL);
     Py_DECREF(output);
 
-    return result;
+    return namedtuple;
 }
 
 static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
 {
     Py_ssize_t numel = PyList_Size(main);
-    PyObject *output = PyList_New(numel);
+    PyObject *output = PyList_New(numel), *result = NULL;
     if(output == NULL) return NULL;
 
     Py_ssize_t j, p, len = PyTuple_Size(rest);
@@ -86,12 +88,13 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        PyObject *result = _apply(callable, main_, rest_, safe);
+        result = _apply(callable, main_, rest_, safe);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
             return NULL;
         }
+
         PyList_SET_ITEM(output, p, result);
     }
 
@@ -105,7 +108,6 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest)
     Py_ssize_t len = PyTuple_Size(rest);
     PyObject *item_, *args = PyTuple_New(1+len);
     if(args == NULL) return NULL;
-
 
     Py_INCREF(main);
     PyTuple_SetItem(args, 0, main);
