@@ -1,4 +1,5 @@
 #include <Python.h>
+// https://edcjones.tripod.com/refcount.html
 
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool const safe);
 
@@ -7,7 +8,7 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
     PyObject *output = PyDict_New(), *result = NULL;
     if(output == NULL) return NULL;
 
-    Py_ssize_t j, p = 0, len = PyTuple_Size(rest);
+    Py_ssize_t j, p = 0, len = PyTuple_GET_SIZE(rest);
     PyObject *key, *main_, *item_, *rest_ = PyTuple_New(len);
     while (PyDict_Next(main, &p, &key, &main_)) {
         for(j = 0; j < len; j++) {
@@ -35,11 +36,11 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
 
 static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
 {
-    Py_ssize_t numel = PyTuple_Size(main);
+    Py_ssize_t numel = PyTuple_GET_SIZE(main);
     PyObject *output = PyTuple_New(numel), *result = NULL;
     if(output == NULL) return NULL;
 
-    Py_ssize_t j, p, len = PyTuple_Size(rest);
+    Py_ssize_t j, p, len = PyTuple_GET_SIZE(rest);
     PyObject *main_, *item_,  *rest_ = PyTuple_New(len);
     for(p = 0; p < numel; p++) {
         main_ = PyTuple_GET_ITEM(main, p);
@@ -73,11 +74,11 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
 
 static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
 {
-    Py_ssize_t numel = PyList_Size(main);
+    Py_ssize_t numel = PyList_GET_SIZE(main);
     PyObject *output = PyList_New(numel), *result = NULL;
     if(output == NULL) return NULL;
 
-    Py_ssize_t j, p, len = PyTuple_Size(rest);
+    Py_ssize_t j, p, len = PyTuple_GET_SIZE(rest);
     PyObject *main_, *item_,  *rest_ = PyTuple_New(len);
     for(p = 0; p < numel; p++) {
         main_ = PyList_GET_ITEM(main, p);
@@ -105,7 +106,7 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
 
 static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest)
 {
-    Py_ssize_t len = PyTuple_Size(rest);
+    Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *item_, *args = PyTuple_New(1+len);
     if(args == NULL) return NULL;
 
@@ -115,7 +116,7 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest)
         item_ = PyTuple_GET_ITEM(rest, j);
 
         Py_INCREF(item_);
-        PyTuple_SetItem(args, j + 1, item_);
+        PyTuple_SET_ITEM(args, j + 1, item_);
     }
 
     PyObject *output = PyObject_Call(callable, args, NULL);
@@ -126,11 +127,13 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest)
 
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
 {
+    PyObject *result;
+
     if(PyDict_Check(main)) {
         if(safe) {
             Py_ssize_t len = PyDict_Size(main);
 
-            for(Py_ssize_t j = 0; j < PyTuple_Size(rest); ++j) {
+            for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
                 PyObject *obj = PyTuple_GET_ITEM(rest, j);
 
                 if(!PyDict_Check(obj)) {
@@ -154,13 +157,15 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
             }
         }
 
-        return _apply_dict(callable, main, rest, safe);
+        if(Py_EnterRecursiveCall("")) return NULL;
+        result = _apply_dict(callable, main, rest, safe);
+        Py_LeaveRecursiveCall();
 
     } else if(PyTuple_Check(main)) {
         if(safe) {
-            Py_ssize_t len = PyTuple_Size(main);
+            Py_ssize_t len = PyTuple_GET_SIZE(main);
 
-            for(Py_ssize_t j = 0; j < PyTuple_Size(rest); ++j) {
+            for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
                 PyObject *obj = PyTuple_GET_ITEM(rest, j);
 
                 if(!PyTuple_Check(obj)) {
@@ -168,20 +173,22 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
                     return NULL;
                 }
 
-                if(len != PyTuple_Size(obj)) {
+                if(len != PyTuple_GET_SIZE(obj)) {
                     PyErr_SetString(PyExc_RuntimeError, "tuple length mismatch");
                     return NULL;
                 }
             }
         }
 
-        return _apply_tuple(callable, main, rest, safe);
+        if(Py_EnterRecursiveCall("")) return NULL;
+        result = _apply_tuple(callable, main, rest, safe);
+        Py_LeaveRecursiveCall();
 
     } else if(PyList_Check(main)) {
         if(safe) {
-            Py_ssize_t len = PyList_Size(main);
+            Py_ssize_t len = PyList_GET_SIZE(main);
 
-            for(Py_ssize_t j = 0; j < PyTuple_Size(rest); ++j) {
+            for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
                 PyObject *obj = PyTuple_GET_ITEM(rest, j);
 
                 if(!PyList_Check(obj)) {
@@ -189,17 +196,23 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
                     return NULL;
                 }
 
-                if(len != PyList_Size(obj)) {
+                if(len != PyList_GET_SIZE(obj)) {
                     PyErr_SetString(PyExc_RuntimeError, "list length mismatch");
                     return NULL;
                 }
             }
         }
 
-        return _apply_list(callable, main, rest, safe);
+        if(Py_EnterRecursiveCall("")) return NULL;
+        result = _apply_list(callable, main, rest, safe);
+        Py_LeaveRecursiveCall();
+
+    } else {
+        result = _apply_base(callable, main, rest);
+
     }
 
-    return _apply_base(callable, main, rest);
+    return result;
 }
 
 static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
@@ -207,7 +220,7 @@ static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
     int safe = 1;
     PyObject *callable = NULL, *main = NULL;
 
-    Py_ssize_t len = PyTuple_Size(args);
+    Py_ssize_t len = PyTuple_GET_SIZE(args);
     PyObject *first = PyTuple_GetSlice(args, 0, 2);
     PyObject *rest = PyTuple_GetSlice(args, 2, len);
 
