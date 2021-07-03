@@ -1,9 +1,11 @@
 #include <Python.h>
 // https://edcjones.tripod.com/refcount.html
 
-static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool const safe);
+static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
+                        bool const safe, bool const star);
 
-static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
+static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
+                             bool const safe, bool const star)
 {
     PyObject *output = PyDict_New(), *result = NULL;
     if(output == NULL) return NULL;
@@ -18,7 +20,7 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        result = _apply(callable, main_, rest_, safe);
+        result = _apply(callable, main_, rest_, safe, star);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
@@ -34,7 +36,8 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
     return output;
 }
 
-static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
+static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest,
+                              bool const safe, bool const star)
 {
     Py_ssize_t numel = PyTuple_GET_SIZE(main);
     PyObject *output = PyTuple_New(numel), *result = NULL;
@@ -51,7 +54,7 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        result = _apply(callable, main_, rest_, safe);
+        result = _apply(callable, main_, rest_, safe, star);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
@@ -72,7 +75,8 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
     return namedtuple;
 }
 
-static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
+static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
+                             bool const safe, bool const star)
 {
     Py_ssize_t numel = PyList_GET_SIZE(main);
     PyObject *output = PyList_New(numel), *result = NULL;
@@ -89,7 +93,7 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        result = _apply(callable, main_, rest_, safe);
+        result = _apply(callable, main_, rest_, safe, star);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
@@ -104,14 +108,17 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
     return output;
 }
 
-static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest)
+static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
+                             bool const star)
 {
+    PyObject *output;
+
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *item_, *args = PyTuple_New(1+len);
     if(args == NULL) return NULL;
 
     Py_INCREF(main);
-    PyTuple_SetItem(args, 0, main);
+    PyTuple_SET_ITEM(args, 0, main);
     for(Py_ssize_t j = 0; j < len; j++) {
         item_ = PyTuple_GET_ITEM(rest, j);
 
@@ -119,13 +126,23 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest)
         PyTuple_SET_ITEM(args, j + 1, item_);
     }
 
-    PyObject *output = PyObject_Call(callable, args, NULL);
-    Py_DECREF(args);
+    if (star) {
+        output = PyObject_Call(callable, args, NULL);
+        Py_DECREF(args);
+
+    } else {
+        PyObject *one = PyTuple_New(1);
+        PyTuple_SET_ITEM(one, 0, args);
+
+        output = PyObject_Call(callable, one, NULL);
+        Py_DECREF(one);
+    }
 
     return output;
 }
 
-static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool const safe)
+static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
+                        bool const safe, bool const star)
 {
     PyObject *result;
 
@@ -158,7 +175,7 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
         }
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_dict(callable, main, rest, safe);
+        result = _apply_dict(callable, main, rest, safe, star);
         Py_LeaveRecursiveCall();
 
     } else if(PyTuple_Check(main)) {
@@ -181,7 +198,7 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
         }
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_tuple(callable, main, rest, safe);
+        result = _apply_tuple(callable, main, rest, safe, star);
         Py_LeaveRecursiveCall();
 
     } else if(PyList_Check(main)) {
@@ -204,11 +221,11 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
         }
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_list(callable, main, rest, safe);
+        result = _apply_list(callable, main, rest, safe, star);
         Py_LeaveRecursiveCall();
 
     } else {
-        result = _apply_base(callable, main, rest);
+        result = _apply_base(callable, main, rest, star);
 
     }
 
@@ -217,7 +234,7 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest, bool
 
 static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    int safe = 1;
+    int safe = 1, star = 1;
     PyObject *callable = NULL, *main = NULL;
 
     Py_ssize_t len = PyTuple_GET_SIZE(args);
@@ -237,15 +254,15 @@ static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
         PyObject *empty = PyTuple_New(0);
         if (empty == NULL) return NULL;
 
-        static char *kwlist[] = {"safe", NULL};
+        static char *kwlist[] = {"safe", "star", NULL};
         int parsed = PyArg_ParseTupleAndKeywords(
-                empty, kwargs, "|$p:apply", kwlist, &safe);
+                empty, kwargs, "|$pp:apply", kwlist, &safe, &star);
 
         Py_DECREF(empty);
         if (!parsed) return NULL;
     }
 
-    PyObject *result = _apply(callable, main, rest, safe);
+    PyObject *result = _apply(callable, main, rest, safe, star);
     Py_DECREF(rest);
 
     return result;
