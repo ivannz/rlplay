@@ -4,6 +4,37 @@
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                         bool const safe, bool const star);
 
+
+int _validate_dict(PyObject *main, PyObject *rest)
+{
+    Py_ssize_t len = PyDict_Size(main);
+
+    for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
+        PyObject *obj = PyTuple_GET_ITEM(rest, j);
+
+        if(!PyDict_Check(obj)) {
+            PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
+            return 0;
+        }
+
+        if(len != PyDict_Size(obj)) {
+            PyErr_SetString(PyExc_RuntimeError, "dict size mismatch");
+            return 0;
+        }
+
+        PyObject *key, *value;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(main, &pos, &key, &value)) {
+            if(!PyDict_Contains(obj, key)) {
+                PyErr_SetObject(PyExc_KeyError, key);
+                return 0;
+            }
+        }
+    }
+
+    return 1;
+}
+
 static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
                              bool const safe, bool const star)
 {
@@ -34,6 +65,27 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
     Py_DECREF(rest_);
 
     return output;
+}
+
+int _validate_tuple(PyObject *main, PyObject *rest)
+{
+    Py_ssize_t len = PyTuple_GET_SIZE(main);
+
+    for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
+        PyObject *obj = PyTuple_GET_ITEM(rest, j);
+
+        if(!PyTuple_Check(obj)) {
+            PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
+            return 0;
+        }
+
+        if(len != PyTuple_GET_SIZE(obj)) {
+            PyErr_SetString(PyExc_RuntimeError, "tuple length mismatch");
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest,
@@ -73,6 +125,27 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
     Py_DECREF(output);
 
     return namedtuple;
+}
+
+int _validate_list(PyObject *main, PyObject *rest)
+{
+    Py_ssize_t len = PyList_GET_SIZE(main);
+
+    for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
+        PyObject *obj = PyTuple_GET_ITEM(rest, j);
+
+        if(!PyList_Check(obj)) {
+            PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
+            return 0;
+        }
+
+        if(len != PyList_GET_SIZE(obj)) {
+            PyErr_SetString(PyExc_RuntimeError, "list length mismatch");
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
@@ -147,78 +220,27 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
     PyObject *result;
 
     if(PyDict_Check(main)) {
-        if(safe) {
-            Py_ssize_t len = PyDict_Size(main);
-
-            for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
-                PyObject *obj = PyTuple_GET_ITEM(rest, j);
-
-                if(!PyDict_Check(obj)) {
-                    PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
-                    return NULL;
-                }
-
-                if(len != PyDict_Size(obj)) {
-                    PyErr_SetString(PyExc_RuntimeError, "dict size mismatch");
-                    return NULL;
-                }
-
-                PyObject *key, *value;
-                Py_ssize_t pos = 0;
-                while (PyDict_Next(main, &pos, &key, &value)) {
-                    if(!PyDict_Contains(obj, key)) {
-                        PyErr_SetObject(PyExc_KeyError, key);
-                        return NULL;
-                    }
-                }
-            }
-        }
+        if(safe)
+            if(!_validate_dict(main, rest))
+                return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
         result = _apply_dict(callable, main, rest, safe, star);
         Py_LeaveRecursiveCall();
 
     } else if(PyTuple_Check(main)) {
-        if(safe) {
-            Py_ssize_t len = PyTuple_GET_SIZE(main);
-
-            for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
-                PyObject *obj = PyTuple_GET_ITEM(rest, j);
-
-                if(!PyTuple_Check(obj)) {
-                    PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
-                    return NULL;
-                }
-
-                if(len != PyTuple_GET_SIZE(obj)) {
-                    PyErr_SetString(PyExc_RuntimeError, "tuple length mismatch");
-                    return NULL;
-                }
-            }
-        }
+        if(safe)
+            if(!_validate_tuple(main, rest))
+                return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
         result = _apply_tuple(callable, main, rest, safe, star);
         Py_LeaveRecursiveCall();
 
     } else if(PyList_Check(main)) {
-        if(safe) {
-            Py_ssize_t len = PyList_GET_SIZE(main);
-
-            for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
-                PyObject *obj = PyTuple_GET_ITEM(rest, j);
-
-                if(!PyList_Check(obj)) {
-                    PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
-                    return NULL;
-                }
-
-                if(len != PyList_GET_SIZE(obj)) {
-                    PyErr_SetString(PyExc_RuntimeError, "list length mismatch");
-                    return NULL;
-                }
-            }
-        }
+        if(safe)
+            if(!_validate_list(main, rest))
+                return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
         result = _apply_list(callable, main, rest, safe, star);
@@ -234,6 +256,8 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
 
 static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
 {
+    // from the url at the top: {API 1.2.1} the call mechanism guarantees
+    //  to hold a reference to every argument for the duration of the call.
     int safe = 1, star = 1;
     PyObject *callable = NULL, *main = NULL;
 
@@ -275,7 +299,12 @@ static PyMethodDef modapply_methods[] = {
         (PyCFunction) apply,
         METH_VARARGS | METH_KEYWORDS,
         "Pure C implementation of apply, with optional safety checks.",
-    }, {NULL, NULL, 0, NULL,}
+    }, {
+        NULL,
+        NULL,
+        0,
+        NULL,
+    }
 };
 
 static struct PyModuleDef moduledef = {
