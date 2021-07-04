@@ -4,7 +4,6 @@
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                         bool const safe, bool const star);
 
-
 int _validate_dict(PyObject *main, PyObject *rest)
 {
     Py_ssize_t len = PyDict_Size(main);
@@ -47,9 +46,10 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
         for(j = 0; j < len; j++) {
             item_ = PyDict_GetItem(PyTuple_GET_ITEM(rest, j), key);
 
-            // a tuple assumes ownership, steals the reference, owned by a dict
-            // from `rest`, so we incref to proect it. it also decrefs `an item
-            // already in the tuple at the affected position (if any).`
+            // a tuple assumes ownership of, or 'steals', the reference, owned
+            // by a dict from `rest`, so we incref it for protection. It also
+            // decrefs `any item already in the tuple at the affected position
+            // (if non NULL).`
             Py_INCREF(item_);
             PyTuple_SET_ITEM(rest_, j, item_);
         }
@@ -62,8 +62,8 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
             return NULL;
         }
 
-        // does an incref of its own (both value and the key)
-        // XXX which is why `_apply_dict` logic appears different from `_tuple`
+        // dict's setitem does an incref of its own (both value and the key),
+        // which is why `_apply_dict` logic appears different from `_tuple`
         PyDict_SetItem(output, key, result);
 
         // decref the result, so that only `output` owns a ref
@@ -186,6 +186,51 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
     }
 
     Py_DECREF(rest_);
+
+    return output;
+}
+
+static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *rest,
+                                bool const safe, bool const star)
+{
+    // XXX it's unlikely that we will ever use this branch, because as docs
+    // it is impossible to know the type of keys of a mapping at runtime,
+    //  hence lists, tuples, dicts and any objects with `__getitem__` are
+    //  mappings according to `PyMapping_Check`.
+    PyObject *output = PyDict_New(), *result = Py_None;
+    if(output == NULL) return NULL;
+    Py_INCREF(result);
+
+    Py_ssize_t j, p, len = PyTuple_GET_SIZE(rest);
+    PyObject *key, *main_, *item_, *rest_ = PyTuple_New(len);
+
+    PyObject *items = PyMapping_Items(main);
+    if(items == NULL) return NULL;
+
+    Py_ssize_t numel = PyList_GET_SIZE(items);
+    for(p = 0; p < numel; p++) {
+        item_ = PyList_GET_ITEM(items, p);
+        key = PyTuple_GET_ITEM(item_, 0);
+        main_ = PyTuple_GET_ITEM(item_, 1);
+
+        for(j = 0; j < len; j++) {
+            item_ = PyObject_GetItem(PyTuple_GET_ITEM(rest, j), key);
+            PyTuple_SET_ITEM(rest_, j, item_);
+        }
+
+        Py_DECREF(result);
+
+        result = _apply(callable, main_, rest_, safe, star);
+        if(result == NULL) break;
+
+        PyDict_SetItem(output, key, result);
+    }
+
+    Py_DECREF(items);
+    Py_DECREF(rest_);
+
+    if(result == NULL) return NULL;
+    Py_DECREF(result);
 
     return output;
 }
