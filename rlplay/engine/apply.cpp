@@ -47,10 +47,14 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
         for(j = 0; j < len; j++) {
             item_ = PyDict_GetItem(PyTuple_GET_ITEM(rest, j), key);
 
+            // a tuple assumes ownership, steals the reference, owned by a dict
+            // from `rest`, so we incref to proect it. it also decrefs `an item
+            // already in the tuple at the affected position (if any).`
             Py_INCREF(item_);
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
+        // `result` is a new object, for which we are now responsible
         result = _apply(callable, main_, rest_, safe, star);
         if(result == NULL) {
             Py_DECREF(rest_);
@@ -58,10 +62,15 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
             return NULL;
         }
 
+        // does an incref of its own (both value and the key)
+        // XXX which is why `_apply_dict` logic appears different from `_tuple`
         PyDict_SetItem(output, key, result);
+
+        // decref the result, so that only `output` owns a ref
         Py_DECREF(result);
     }
 
+    // decrefing a tuple also decrefs all its items
     Py_DECREF(rest_);
 
     return output;
