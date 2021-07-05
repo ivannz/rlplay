@@ -40,7 +40,7 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
     obj: any
         The nested container (dict, list, tuple, or namedtuple) of data.
 
-    leading: tuple of int
+    *leading: tuple of int
         The extra leading dimensions to prepend to the shape of the resulting
         tensors residing within the nested container.
 
@@ -143,7 +143,7 @@ def numpify(obj, *leading, copy=False, ctx=None):
     obj: any
         The nested container (dict, list, tuple, or namedtuple) of data.
 
-    leading: tuple of int
+    *leading: tuple of int
         The extra leading dimensions to prepend to the shape of the resulting
         arrays residing within the nested container.
 
@@ -206,7 +206,7 @@ def numpify(obj, *leading, copy=False, ctx=None):
     return apply_single(obj, fn=_as_array)
 
 
-def aliased(ref, *, copy=False, pinned=False, shared=False):
+def aliased(ref, *leading, copy=False, pinned=False, shared=False):
     """Make a pair of nested containers with aliased numpy arrays and torch
     tensors from the reference data.
 
@@ -215,6 +215,10 @@ def aliased(ref, *, copy=False, pinned=False, shared=False):
     ref: any
         The reference nested container (dict, list, tuple, or namedtuple)
         of data.
+
+    *leading: tuple of int
+        The extra leading dimensions to prepend to the shape of the resulting
+        tensors residing within the nested container.
 
     copy: bool, default=False
         Force a copy of the original data in `ref` during torchification even
@@ -262,7 +266,7 @@ def aliased(ref, *, copy=False, pinned=False, shared=False):
     """
     assert not (pinned and shared)
 
-    pyt = torchify(ref, pinned=pinned, shared=shared, copy=copy)
+    pyt = torchify(ref, *leading, pinned=pinned, shared=shared, copy=copy)
     return Aliased(npy=numpify(pyt), pyt=pyt)
 
 
