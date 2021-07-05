@@ -449,26 +449,26 @@ def startup(envs, actor, buffer, *, pinned=False):
         structured_setitem_(npy.obs, j, env.reset())  # x_0 = s_*
         actor.reset(j, fragment.pyt.hx)  # h_0 = h_*
 
-    # Create `state`, a dedicated container of [B x ?] aliased copy of the data
-    # and the current recurrent state of the actor $h_t$, both possibly
-    # residing in torch's pinned memory.
-    state = aliased(Context(pyt, fragment.pyt.hx, pyt.obs),
-                    copy=True, pinned=pinned)
+    # Create `context`, a dedicated container of [B x ?] aliased copy of
+    # the data and the current recurrent state `hx` of the actor $h_t$, both
+    # possibly residing in torch's pinned memory.
+    context = aliased(Context(pyt, fragment.pyt.hx, pyt.obs),
+                      copy=True, pinned=pinned)
 
-    # writable view of `state.pyt.input` with an extra temporal dim
-    unsafe_apply(state.pyt.input, fn=lambda x: x.unsqueeze_(0))  # in-place!
+    # writable view of `context.pyt.input` with an extra temporal dim
+    unsafe_apply(context.pyt.input, fn=lambda x: x.unsqueeze_(0))  # in-place!
     # XXX we do this so that the actor may rely on T x B x ... data on input
 
     # `pyt` is used for interacting with the actor, `npy` -- with the fragment
     #  and both are just different interfaces to the same underlying data.
     # anon. torch storage <<--editable unsqueezed view-->> `pyt` torch tensors
     #        ditto        <<--__array__ data aliasing -->> `npy` numpy arrays
-    return state, fragment
+    return context, fragment
 
 
 @torch.no_grad()
 def context(*envs, pinned=False):
-    r"""Allocate aliased running context for rollout collection.
+    r"""Allocate aliased running state for rollout collection.
 
     Parameters
     ----------
@@ -495,7 +495,8 @@ def context(*envs, pinned=False):
     Details
     -------
     This is a version of `startup()`, specialized for actor-less context
-    initialization.
+    initialization. It returns a simplified context, which contains only
+    the State, e.g. the `obs-act-rew-fin` data.
     """
 
     env = envs[0]
@@ -523,10 +524,10 @@ def context(*envs, pinned=False):
 
 
 @torch.no_grad()
-def collect(envs, actor, fragment, state, *, sticky=False, device=None):
+def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     r"""Collect the trajectory fragment (rollout) by marching the actor and
     the environments, in lockstep (`actor` and `envs`, respectively) updating
-    `state` and recording everything into `fragment`.
+    `context` and recording everything into `fragment`.
 
     Parameters
     ----------
@@ -539,7 +540,7 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     fragment : Aliased Fragment
         The buffer into which the trajectory fragment is recorded *in-place*.
 
-    state : Aliased State
+    context : Aliased Context
         The most recent state for the actor to react to. *Updated in-place.*
 
     sticky : bool, default=False
@@ -567,17 +568,11 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     $
     for $h \geq t$ also known as `the t-th return'.
 
-    Since the rewards following terminal states are identically zero, because
-    the episode has ended, such sates are not actionable, and, hence, there
-    is no point in storing this $t+1$-st observation. Therefore $d_t = \top$
-    in `out[t-1]` indicates that the observation $s_t$, that would have been
-    recorded in `out[t]`, is terminal. Instead `out[t]` records $s_*$. On the
-    other hand if $d_t = \bot$, then the observation in `out[t]` is the actual
-    next observation $s_t$.
-
     The `.step` collects this data by stepping both through the actor and
-    the environment in lockstep into the `out` buffer. The `out.state` buffer
-    contains the following data
+    the environment in lockstep into the `out` buffer.
+
+    The `fragment.state`, a.k.a. `out` buffer, contains the following data
+
         +-----+-------------------------------------+
         |   # |  obs      act      rew      fin     |
         +-----+-------------------------------------+
@@ -593,6 +588,14 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
     square brackets represent the corresponding record in the buffer:
 
         out[t] = x_t, a_t, r_{t+1}, d_{t+1}
+
+    Since the rewards following any terminal state are always zero, because
+    the episode has ended, such sates are not actionable, and there is no point
+    in storing this $t+1$-st observation. Therefore $d_t = \top$ in `out[t-1]`
+    indicates that instead of recording a terminal $s_t$ into `out[t]`, we have
+    reset the environment and put an init observation $s_*$ into `out[t]`. On
+    the other hand $d_t = \bot$ in `out[t-1]` means that the observation data
+    in `out[t]` is the actual observation $s_t$ following $s_{t-1}$.
 
     This non-intuitive indexing notation allows computing the return as
 
@@ -634,25 +637,26 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
         state  = (    s_*, a_{T-1}, r_T, d_T)
     """
 
-    # shorthands for fast access
-    # `out[t]` is $x_t, a_t, r_{t+1}$, and $d_{t+1}$, for $x_t$ above
-    out, hx = fragment.npy.state, state.pyt.hx
-    npy_next_obs = state.npy.next_obs
-
-    # `pyt/npy` is its jagged edge: $x_t, a_{t-1}, r_t$, $d_t$, and $h_t$.
-    npy, pyt = state.npy.input, state.pyt.input
+    # copy the `n_overlap` records from the last fragment to the beginning
+    #  of the current fragment
+    n_overlap = 0
 
     # write the initial recurrent state of the actor to the shared buffer
-    structured_tensor_copy_(fragment.pyt.hx, hx)
+    structured_tensor_copy_(fragment.pyt.hx, context.pyt.hx)
+
+    # shorthands for fast access
+    # `out[t]` is $x_t, a_t, r_{t+1}$, and $d_{t+1}$, for $x_t$ above
+    out, hx = fragment.npy.state, context.pyt.hx
+    npy_next_obs = context.npy.next_obs
+
+    # `pyt/npy` is its jagged edge: $x_t, a_{t-1}, r_t$, $d_t$, and $h_t$.
+    npy, pyt = context.npy.input, context.pyt.input
 
     # Allocate on-device context and recurrent state, if device is not None
     pyt_ = pyt
     if device is not None:
         pyt_, hx = unsafe_apply((pyt_, hx), fn=lambda x: x.to(device))
 
-    # copy the `n_overlap` records from the last fragment to the beginning
-    #  of the current fragment
-    n_overlap = 0
     # XXX stepper uses a single actor for a batch of environments:
     # * one mode of exploration, poor randomness
     for t in range(n_overlap, len(out.fin)):  # `fin` is (T + H) x B
@@ -720,7 +724,7 @@ def collect(envs, actor, fragment, state, *, sticky=False, device=None):
             structured_setitem_(out.next_obs, t, npy_next_obs)
 
     # write back the most recent recurrent state for the next rollout
-    structured_tensor_copy_(state.pyt.hx, hx)
+    structured_tensor_copy_(context.pyt.hx, hx)
 
     # push the last observation into the special T+1-th slot. This is enough
     # for DQN since obs[t] (x_t) and obs[t+1] (x_{t+1}) are consecutive if
