@@ -2,6 +2,7 @@ import torch
 import numpy
 
 from collections import namedtuple
+from operator import setitem
 
 from ..utils.schema.base import unsafe_apply
 from ..utils.schema.shared import aliased, torchify
@@ -9,42 +10,44 @@ from ..utils.schema.shared import aliased, torchify
 
 State = namedtuple('State', ['obs', 'act', 'rew', 'fin'])
 State.__doc__ = r"""The current state to be acted upon: the current observation
-    $s_t$, the past action $a_{t-1}$, the most recently received reward $r_t$,
+    $x_t$, the past action $a_{t-1}$, the most recently received reward $r_t$,
     and the termination flag $d_t$:
 
         $(x_t, a_{t-1}, r_t, d_t)$
 
-    where $x_t = s_*$ if $d_t$ else $s_t$, boolean $d_t$ indicates if $r_t$ and
-    $a_{t-1}$ must be disregarded, i.e. $x_t$ in `obs` is the start of a new
-    trajectory rollout (see detailed description below).
+    where the boolean $d_t$ indicates if a new trajectory has been started, and
+    $r_t$ and $a_{t-1}$ must be disregarded as unrelated.
 
     Attributes
     ----------
     obs : nested container of tensors with shape (batch, ...)
         A batch of observations $x_t$ from the environment containing either
-        the current state $s_t$ observed as a result of past actions and
-        the environment transitions, or the initial state $s_*$ observed upon
-        a reset. Which is which is determined by the corresponding boolean
-        flag in `.fin`.
+        the current observation resulting from past actions and transitions,
+        or the initial observation $x_*$ from a new trajectory. Which is which
+        is determined by the corresponding boolean flag in `.fin`.
 
     act : nested container of tensors with shape (batch, ...)
         The batch of the most recent actions $a_{t-1}$, taken in each
-        environment causing the transition to $s_t$). Must be ignored
-        upon the reset of an environment, which is indicated by
+        environment, which caused the transition to $(x_t, s_t)$). Must be
+        ignored upon the reset of an environment, which is indicated by
         the corresponding boolean flag in `.fin`.
 
     rew : tensor of float with shape (batch,)
         The batch of the most recently received rewards $r_t$ obtained from
-        transitioning from $s_{t-1}$ to $s_t$ by acting $a_{t-1}$. Like `.act`
-        must be ignored whenever the corresponding boolean flag in `.fin` is
-        set, which indicates a reset.
+        transitioning from $s_{t-1}$ to $(s_t, x_t)$ by acting $a_{t-1}$. Like
+        `.act` must be ignored whenever the corresponding boolean flag in `.fin`
+        is set, which indicates a reset.
 
     fin : tensor of bool with shape (batch,)
         The batch of boolean flags $d_t$ indicating that the previous action
         $a_{t-1}$ caused a transition to a terminal state (true $s_t$) in
         the corresponding environment, upon which it was automatically reset
-        to $s_*$, which overwrote $s_t$ in `.obs`. If false, then `.obs`
-        contains the true current state $s_t$.
+        to $s_*$, which overwrote $x_t$ in `.obs` with $x_*$. If False, then
+        `.obs` contains the true current observation $x_t$.
+
+    See Also
+    --------
+    See docs for `BaseActorModule.forward`.
     """
 
 Context = namedtuple('Context', ['state', 'hx', 'next_obs'])
@@ -56,23 +59,20 @@ Context.__doc__ = r"""This is a convenience object, that extends `State` by
     """
 
 Fragment = namedtuple('Fragment', ['state', 'actor', 'env', 'bootstrap', 'hx'])
-Fragment.__doc__ = r"""A `T x batch` fragment of the trajectories of the actor
-    in a batch of environments and relevant information, e.g. rnn states,
-    value estimates, etc.
+Fragment.__doc__ = r"""A `(1 + T) x batch` fragment of the trajectories of
+    the actor in a batch of environments and relevant information, e.g. rnn
+    states, value estimates, policy logits, etc..
 
     Attributes
     ----------
-    state : nested container of tensors with shape (T, batch, ...)
-        The obs-act-rew-fin state with almost the same semantics as described
-        in `State`, except for `.obs`, which in this case is $s_{t-1}$, i.e.
-        the past observation, to which the actor reacted with $a_{t-1}$, and
-        which caused a transition to $s_t$, which yielded the reward $r_t$,
-        with the termination flag value $d_t$. See docs for `Stepper.step`.
+    state : nested container of tensors with shape (1+T, batch, ...)
+        The obs-act-rew-fin state with the same semantics as described in
+        `State`.
 
     actor : nested container of tensors with shape (T, batch, ...)
         The extra information returned by the actor's `.step` along with
-        the action $a_t$ in response to the state $(s_t, a_{t-1}, r_t, d_t)$,
-        such as the value estimates $v(s_t)$ or rnn state $h_t$.
+        the action $a_t$ in response to $(x_t, a_{t-1}, r_t, d_t, h_t)$,
+        such as the value estimates $v(s_t)$ or rnn state $h_{t+1}$.
 
     env : nested container of tensors with shape (T, batch, ...)
         The extra data received from the environments' `.step` upon taking
@@ -81,16 +81,16 @@ Fragment.__doc__ = r"""A `T x batch` fragment of the trajectories of the actor
     bootstrap : tensor of float with shape (batch,)
         A vector of value estimates $v(s_T)$ used to bootstrap the present
         value of the reward flow following the state $s_T$, which falls beyond
-        the fragment $(s_t, a_t, r_{t+1}, d_{t+1})_{t=0}^{T-1}$ recorded in
+        the fragment $(s_{t+1}, a_t, r_{t+1}, d_{t+1})_{t=0}^{T-1}$ recorded in
         `.state`, but is related to $r_T$ and $d_T$. If a flag in `.state.fin`
-        boolean tensor is set, then the corresponding bootstrap value should be
-        ignored when computing the returns, since the return from a terminal
-        state is identically zero.
+        is set, then the corresponding bootstrap value should be ignored when
+        computing the returns, since the reward flow from any terminal state
+        is identically zero.
 
     hx : container of tensor, or None
         The most recent recurrent state of the actor $h_t$, which conditions
         its response along with the `.obs`, `.act`, `.rew` inputs similarly to
-        $a_t, h_{t+1} = \pi(s_t, a_{t-1}, r_t, d_t; h_t)$.
+        $(s_t, a_{t-1}, r_t, d_t; h_t) \to (a_t, h_{t+1})$.
 
     Details
     -------
@@ -112,7 +112,7 @@ def structured_setitem_(dst, index, value):
     """Do `dst[index] = value` in `dst` nested container with values coming
     from another with IDENTICAL structure.
     """
-    unsafe_apply(dst, value, fn=lambda d, v: d.__setitem__(index, v))
+    unsafe_apply(dst, value, fn=lambda d, v: setitem(d, index, v))
 
 
 def structured_tensor_copy_(dst, src, *, at=None):
@@ -235,21 +235,25 @@ class BaseActorModule(torch.nn.Module):
 
         act : nested container of tensors with shape = `n_seq, n_envs, ...`
             A batch of the last actions $a_{t-1}$ taken in the environments by
-            the actor. Components of `act` MUST be ignored if the corresponding
-            flag in `fin` is set, because the associated environment has just
-            been reset, and a new trajectory is being rolled out.
+            the actor.
+
+            Components of `act` SHOULD be ignored if the corresponding flag
+            in `fin` is set, because the associated environment has just been
+            reset, and a new trajectory is being rolled out.
 
         rew : float tensor, shape = `n_seq, n_envs,`
             The reward that each environment yielded due to the transition to
-            $x_t$ after taking action $a_{t-1}$. Components of `rew` MUST be
-            ignored if the corresponding flag in `fin` is set.
+            $(s_t, x_t)$ after taking action $a_{t-1}$ at $(s_{t-1}, x_{t-1})$.
+
+            Components of `rew` MUST be ignored if the corresponding flag in
+            `fin` is set.
 
         fin : bool tensor, shape = `n_seq, n_envs,`
             The reset flags $d_t$ indicate which of the previous actions in
             `act` and last rewards in `rew` have been invalidated by a reset
             of the corresponding environment. Also indicates if the observation
-            $x_t$ is the initial observation $s_*$ after a reset (True), or
-            a non-terminal observation $s_t$ (False).
+            $x_t$ is the initial observation $x_*$ after a reset (True), or
+            a non-terminal observation $x_t$ (False).
 
         hx : container of tensors
             The recurrent context $h_t$, parts of which ought to be reset, if
@@ -265,7 +269,7 @@ class BaseActorModule(torch.nn.Module):
         act : nested container of tensors with shape = `n_seq, n_envs, ...`
             The actions $a_t$ to be taken in the environment in response to
             the current observations $x_t$ (obs), the previous actions $a_{t-1}$
-            (act), the recently obtained reward $r_t$ (rew), the terminaltion
+            (act), the recently obtained reward $r_t$ (rew), the termination
             flag $d_t$ (fin), and the recurrent state $h_t$ (hx).
 
         hx : nested container of tensors
@@ -344,33 +348,28 @@ def prepare(
     # numpy arrays or scalars with environment's proper dtypes.
     rew_, fin_ = numpy.float32(rew_), bool(fin_)
 
-    # create 1 x n_envs buffer for bootstrap value estimate $v(s_T)$
+    # create `1 x n_envs` buffer for bootstrap value estimate $v(s_T)$
     bootstrap = torchify(rew_, 1, n_envs, shared=shared, pinned=pinned)
 
-    # the buffer for the aux env info data is n_steps x n_envs
+    # the buffer for the aux env info data is `n_steps x n_envs x ...`
     d_env_info = torchify(d_env_info, n_steps, n_envs,
                           shared=shared, pinned=pinned)
 
-    # allocate n_steps x n_envs torch tensor data buffers for actions, rewards
-    # and termination flags
-    act, rew, fin = torchify((act_, rew_, fin_), n_steps, n_envs,
-                             shared=shared, pinned=pinned)
+    # allocate `(1 + n_steps) x n_envs x ...` torch tensor buffers for
+    #  the observations, actions, rewards and termination flags. So that
+    #  they can be folded
+    state = torchify(State(obs_, act_, rew_, fin_),
+                     1 + n_steps, n_envs, shared=shared, pinned=pinned)
 
-    # unlike others, the `obs` buffer is (n_steps + 1) x n_envs to accommodate
-    # the observation used to compute the bootstrap value. This doesn't resolve
-    # the issue of losing terminal observations mid-rollout, but allows SARSA
-    # and Q-learning.
-    obs = torchify(obs_, n_steps + 1, n_envs, shared=shared, pinned=pinned)
-    state = State(obs, act, rew, fin)
-
-    # make a single pass through the actor with one 1 x n_envs x ... batch
+    # make a single pass through the actor with one `1 x n_envs x ...` batch
     pyt = unsafe_apply(state, fn=lambda x: x[:1].to(device))
     unused_act, hx, d_act_info = actor.step(pyt.obs, pyt.act,
                                             pyt.rew, pyt.fin, hx=None)
     # XXX `act_` is expected to have identical structure to `unused_act`
     # XXX `d_act_info` must respect the temporal and batch dims
 
-    # get one time slice from the actor's info [n_envs x ...]
+    # get one time slice from the actor's info `n_envs x ...` and expand into
+    #  an `n_steps x n_envs x ...` structured buffer.
     d_act_info = torchify(unsafe_apply(d_act_info, fn=lambda x: x[0].cpu()),
                           n_steps, shared=shared, pinned=pinned)
 
@@ -428,10 +427,10 @@ def startup(envs, actor, buffer, *, pinned=False):
     aliased by numpy arrays (see details in `rlplay.utils.schema.shared`) for
     zero-copy data interchange.
     """
-    # `fragment` contains [T x B x ?] aliased torch tensors of actor/env
-    # infos, trajectory fragment $(x_{t-1}, a_{t-1}, r_t, d_t)_{t=1}^T$,
-    # and bootstrap values $v(s_T)$, possibly allocated in torch's shared
-    # memory.
+    # `fragment` contains aliased torch tensors of actor/env infos (`.actor`
+    #  and `.env` [T x B x ...]), rollout $(x_t, a_{t-1}, r_t, d_t)_{t=0}^T$
+    #  (`.state` [1 + T x B x ...]), and the bootstrap values $v(s_T)$, all
+    #  possibly residing in torch's shared memory.
     fragment = aliased(buffer)  # just a zero-copy pyt-npy alias
 
     # reset the initial recurrent state of the actor, `hx`, to zero
@@ -556,118 +555,178 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
     Details
     -------
-    Let $s_t$ be the observed state at time $t$, $a_t$ the action taken at
-    time $t$, $r_{t+1}$ -- the reward obtained due to $(s_t, a_t) \to s_{t+1}$
-    transition, and $d_{t+1}$ an indicator whether the new state $s_{t+1}$ is
-    terminal. Let $s_*$ be the observation just after an environment reset.
-    The present value of the reward flow obtained by following the trajectory
-    after the state $s_t$, i.e. $(a_t, s_{t+1}, a_{t+1}, ...)$, is defined as
+    Let $s_t$ be the environment's state at time $t$ (inaccessible), and $x_t$,
+    $r_t$ be the observation and the reward emitted by the env's transition to
     $
-        G_t = \sum_{j=t}^{h-1} \gamma^{j-t} r_{j+1} 1_{\neg d_{j+1}}
-            + \gamma^{h-t} G_h
+        (s_{t-1}, a_{t-1}) \to (s_t, x_t, r_t, d_t)
+    $,
+    with $d_t$ indicating if $s_t$ is terminal. The action $a_t$ is taken at
+    in response to the current reward $r_t$ and observation $x_t$, the last
+    action $a_{t-1}$ and actor's current internal state $h_t$:
     $
-    for $h \geq t$ also known as `the t-th return'.
+        (x_t, a_{t-1}, r_t, d_t, h_t) \to (a_t, h_{t+1})
+    $.
+    Let $(s_*, x_*)$ be the true state and the observation just after a reset
+    of an environment.
 
-    The `.step` collects this data by stepping both through the actor and
-    the environment in lockstep into the `out` buffer.
-
-    The `fragment.state`, a.k.a. `out` buffer, contains the following data
-
-        +-----+-------------------------------------+
-        |   # |  obs      act      rew      fin     |
-        +-----+-------------------------------------+
-        |   0 |  x_0      a_0      r_1      d_1     |
-        |     |      ...      ...        ...        |
-        |   t |  x_t      a_t      r_{t+1}  d_{t+1} |
-        |     |      ...      ...        ...        |
-        | T-1 |  x_{T-1}  a_{T-1}  r_T      d_T     |
-        +-----+-------------------------------------+
-
-    with $x_{t+1} = s_*$ if $d_{t+1}$, and $s_{t+1}$ otherwise. The subscript
-    indices represent the index in the trajectory sequence, while those in
-    square brackets represent the corresponding record in the buffer:
-
-        out[t] = x_t, a_t, r_{t+1}, d_{t+1}
-
-    Since the rewards following any terminal state are always zero, because
-    the episode has ended, such sates are not actionable, and there is no point
-    in storing this $t+1$-st observation. Therefore $d_t = \top$ in `out[t-1]`
-    indicates that instead of recording a terminal $s_t$ into `out[t]`, we have
-    reset the environment and put an init observation $s_*$ into `out[t]`. On
-    the other hand $d_t = \bot$ in `out[t-1]` means that the observation data
-    in `out[t]` is the actual observation $s_t$ following $s_{t-1}$.
-
-    This non-intuitive indexing notation allows computing the return as
-
-        G[j] = out[j].rew + gamma * (1 - out[j].fin) * G[j+1]
-
-    for `j=0..T-1` where $G[j] \approx G_j$, and `G[T] = 0` if `out[T-1].fin`
-    and `G[T] = v(s_T)` otherwise. The latter requires explicitly computing
-    the value function at a non-terminal state $s_T$, when collection is
-    interrupted mid-trajectory.
-
-    The value function estimates the present value (returns)
+    For simplicity assume that $x_t = s_t$, i.e. the env is fully observed. Let
+    $h > t$. The present value $G_\pi(s_t)$ of the reward flow obtained by
+    following the policy $\pi$ starting at $s_t$, i.e.
     $
-        v(s_t)
-            \approx \mathbb{E}_{\tau \sim p \circ \pi} G_t(\tau)
+        \tau = (a_t, r_{t+1}, s_{t+1}, a_{t+1}, ..., a_{h-1}, s_h, r_h)
+    $,
+    with stochastic transition dynamics
     $
-    with
+        a_j \sim \pi_j(a \mid s_j)
     $
-        \tau = (s_t, a_t, r_{t+1})_{t\geq 0}
+    and
     $
-    and $T(\tau) = \inf\{t \geq 1 \colon s_t = \times \}$ -- the trajectory
-    termination moment.
+        s_{j+1}, r_{j+1} \sim p(s, r \mid s_j, a_j)
+    $
+    for $j=t...h-1$ is defined as `the t-th return'
+    $
+        G_\pi(s_t)
+            = \mathbb{E}_\tau
+                \sum_{j=t}^{h-1} \gamma^{j-t} r^\dagger_{j+1}
+                + \gamma^{h-t} G_\pi(s^\dagger_h)
+    $,
+    provided the trajectory hasn't been is terminated mid-way (otherwise we
+    consider a `ceased` reward and a stopped observation processes, i.e.
+    $r^\dagger$ and $s^\dagger$ are `frozen` at the **stopping time**
+    $T(s_t) \geq t$ with
+    $
+        r^\dagger_j = 0 if j > T(s_t) else r_j
+    $
+    and
+    $
+        s^\dagger_j = s_{T(s_t) \wedge j}
+    $.
+    Essentially we have
+    $
+        d_j = 1_{j \geq T(s_t)}
+    $.
+    This is because the rewards following terminal states are assumed to always
+    be zero, since the episode has ended.
 
-    Implementation
-    --------------
-    The `.step` as a whole is actually $T$ actor-environment interactions
-    with the slightly shifted internal loop state `npy/pyt` written into `out`.
-    If `sticky` is False, then in `.step` after the iteration `t` of the outer
-    loop it is guaranteed that
-        out[t] = (    x_t, a_t, r_{t+1}, d_{t+1})
-        state  = (x_{t+1}, a_t, r_{t+1}, d_{t+1})
+    This data is collected by stepping through the actor and the environment in
+    lockstep and recording it into the `fragment` rollout buffer and keeping
+    updated `context`. The `fragment.state`, a.k.a. `out`, with a terminal
+    observations at relative time $t+1$, contains the following data:
 
-    with x_t = s_* if d_t else s_t, where $s_*$ denotes the state after
-    the `env.reset`. If `sticky` is True, then
-        x_t = s_t if t < T else $s_*$
+    if `sticky` is False
 
-    with T = \inf\{t \geq 1 : d_t = \top\}. All `out[t]` for t >= T are to be
-    considered invalid. For example, at t=T-1
-        out[t] = (x_{T-1}, a_{T-1}, r_T, d_T)
-        state  = (    s_*, a_{T-1}, r_T, d_T)
+      +---+-----+-----------------------------------------+-------------+
+      |   |     |               .state                    | (env's      |
+      |   |  #  +-----------------------------------------+  state)     |
+      |   |     |  obs       act       rew       fin      |             |
+      +---+-----+-----------------------------------------+-------------+
+      |   |     |                                         |             |
+      | f |   0 |  x_0       a_{-1}    r_0       d_0      |  s_0        |
+      | r |     |      ...       ...         ...          |    ...      |
+      | a |   t |  x_t       a_{t-1}   r_t       \bot     |  s_t        |
+      | g |     |                                         |             |
+      | m | t+1 |  x'_*      a_t       r_{t+1}   \top     |  s'_*       |
+      | e |     |                                         |             |
+      | n | t+2 |  x'_{t+2}  a'_{t+1}  r'_{t+2}  \bot     |  s'_{t+1}   |
+      | t |     |      ...      ...        ...            |     ...     |
+      |   | N-1 |  x'_N      a'_{N-1}  r'_N      d'_N     |  s'_N       |
+      |   |     |                                         |             |
+      | p |   N |  x'_{N+1}  a'_N      r'_{N+1}  d'_{N+1} |  s'_{N+1} ------+
+      |   |     |                                         |             |   |
+      +---+-----+-----------------------------------------+-------------+ copy
+      | p |     |                                         |             |   |
+      | + |   0 |  x_0       a_{-1}    r_0       d_0      |  s_0      <<----+
+      | 1 |     |      ...      ...        ...            |             |
+      +---+-----+-----------------------------------------+-------------+
+
+      (the apostrophe indicates a new trajectory within the same fragment)
+
+    Notice that the record `out[t]` still contains a VALID last action $a_t$
+    and the true received terminal reward $r_{t+1}$. However this compact data
+    recording does not contain the true terminal observation $x_t$, because it
+    has been overwritten by $x_*$.
+
+    In short, if `out.state.fin[t]` is True, then the action `out.state.act[t]`
+    taken from `out.state[t-1]` has led to a terminal state with reward
+    `out.state.rew[t]`, and the observation in `out.state.obs[t]` is already
+    the initial observation $x_*$ form a newly started trajectory. Otherwise,
+    if `out.state.fin[t]` is False, then `out.state[t-1]` and `out.state[t]`
+    are truly consecutive records from the same trajectory.
+
+    This non-intuitive indexing notation allows computing the return for the
+    action $a_t$ in `out.state.act[t+1]` using
+
+        G[t] = out.state.rew[t+1] + gamma * (1 - out.fin[t+1]) * G[t+1]
+
+    where `G[t] $\approx G_\pi(s_t)$`, and `G[N] = 0` if `out.state.fin[T]` is
+    True, and otherwise `G[T]` is $v(s_N)$, i.e. the bootstrap value --
+    an estimate of future return $G_\pi(s_{N+1})$.
+
+    If `sticky` is True, then any interaction with the terminated environment
+    is ceased until the start of the next fragment.
+
+      +---+-----+-----------------------------------------+-------------+
+      |   |     |               .state                    | (env's      |
+      |   |  #  +-----------------------------------------+  state)     |
+      |   |     |  obs       act       rew       fin      |             |
+      +---+-----+-----------------------------------------+-------------+
+      |   |     |                                         |             |
+      | f |   0 |  x_0       a_{-1}    r_0       d_0      |  s_0        |
+      | r |     |      ...       ...         ...          |     ...     |
+      | a |   t |  x_t       a_{t-1}   r_t       \bot     |  s_t        |
+      | g |     |                                         |             |
+      | m | t+1 |  x'_*      a_t       r_{t+1}   \top     |  s'_*       |
+      | e |     |                                         |             |
+      | n | t+2 |  x'_*      a_t       0         \top     |  s'_*       |
+      | t |     |      ...      ...        ...            |     ...     |
+      |   | N-1 |  x'_*      a_t       0         \top     |  s'_*       |
+      |   |     |                                         |             |
+      | p |   N |  x'_*      a_t       0         \top     |  s'_*     ------+
+      |   |     |                                         |             |   |
+      +---+-----+-----------------------------------------+-------------+ copy
+      | p |     |                                         |             |   |
+      | + |   0 |  x_0       a_{-1}    r_0       d_0      |  s_0      <<----+
+      | 1 |     |      ...      ...        ...            |             |
+      +---+-----+-----------------------------------------+-------------+
+
+    This option is more friendly towards CUDNN and torch's packed sequences.
     """
-
-    # copy the `n_overlap` records from the last fragment to the beginning
-    #  of the current fragment
-    n_overlap = 0
 
     # write the initial recurrent state of the actor to the shared buffer
     structured_tensor_copy_(fragment.pyt.hx, context.pyt.hx)
 
     # shorthands for fast access
-    # `out[t]` is $x_t, a_t, r_{t+1}$, and $d_{t+1}$, for $x_t$ above
+    # `out[t]` is $x_t, a_{t-1}, r_t$, and $d_t$, for $x_t$ defined above
     out, hx = fragment.npy.state, context.pyt.hx
     npy_next_obs = context.npy.next_obs
 
-    # `pyt/npy` is its jagged edge: $x_t, a_{t-1}, r_t$, $d_t$, and $h_t$.
+    # `pyt/npy` is $x_t, a_{t-1}, r_t$, $d_t$, and $h_t$
     npy, pyt = context.npy.state, context.pyt.state
 
     # Allocate on-device context and recurrent state, if device is not None
     pyt_ = pyt
     if device is not None:
+        # XXX this also copies data in `pyt` into `pyt_`
         pyt_, hx = unsafe_apply((pyt_, hx), fn=lambda x: x.to(device))
 
     # XXX stepper uses a single actor for a batch of environments:
     # * one mode of exploration, poor randomness
-    for t in range(n_overlap, len(out.fin)):  # `fin` is (T + H) x B
-        # copy $s_t$ to out[t]
-        structured_setitem_(out.obs, t, npy.obs)
+    for t in range(len(out.fin) - 1):  # `fin` is (1 + T) x B
+        # After each iteration we construct the state `t+1` from `t`:
+        # * `.state[t]` is $(x_t, a_{t-1}, r_t, d_t)$
+        # * `.actor[t], hx` are actor's response to `.state[t]` and $h_t$
+        # * `.env[t]` is env's info from the $s_t, a_t \to s_{t+1}$ step
+        # * `context` is $(x_{t+1}, a_t, r_{t+1}, d_{t+1})$
+        # * `hx` is $h_{t+1}$
+        pass
 
-        # move the updated context to its device-resident copy (`hx` is OK)
-        if pyt_ is not pyt:
-            structured_tensor_copy_(pyt_, pyt)
+        # copy the state $x_t, a_{t-1}, r_t$, and $d_t$ from `ctx` to `out[t]`
+        structured_setitem_(out, t, npy)  # XXX is torch faster?
+        if hasattr(out, 'next_obs'):
+            structured_setitem_(out.next_obs, t, npy_next_obs)
 
-        # $a_t$ is a reaction to $s_t, a_{t-1}, r_t, d_t$ (`npy/pyt`) and `hx`
+        # REACT: $(a_t, h_{t+1})$ are actor's reaction to `.state[t]` and `hx`,
+        #  i.e. $(x_t, a_{t-1}, r_t, d_t)$, and $h_t$, respectively.
         # XXX the actor's outputs respect time and batch dims, except `hx`
         act_, hx, info_actor = actor.step(pyt_.obs, pyt_.act,
                                           pyt_.rew, pyt_.fin, hx=hx)
@@ -677,14 +736,14 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
         # set SHOULD NOT be updated (dim=1).
 
         # the actor may return device-resident tensors, so we copy them here
-        structured_tensor_copy_(pyt.act, act_)
+        structured_tensor_copy_(pyt.act, act_)  # commit $a_t$ into `ctx`
         if info_actor:
-            # fragment.pyt is likely to have is_shared() = True, so it
-            #  cannot be in the pinned memory.
+            # fragment.pyt is likely to have `is_shared() = True`, so it cannot
+            #  be in the pinned memory.
             structured_tensor_copy_(fragment.pyt.actor, info_actor,
-                                    at=slice(t, t+1))
+                                    at=slice(t, t + 1))  # `.actor[t] <- info`
 
-        # `.step` through a batch of envs
+        # STEP + EMIT: `.step` through a batch of envs
         for j, env in enumerate(envs):
             # Only recorded interactions can get stuck: if `.fin` is True,
             #  when `t=0`, this means the env has been reset elsewhere.
@@ -696,46 +755,48 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
                 actor.reset(j, hx)
                 continue
 
-            # get $s_{t+1}$, $r_{t+1}$, and $d_{t+1}$
+            # get $(s_t, a_t) \to (s_{t+1}, x_{t+1}, r_{t+1}, d_{t+1})$
             obs_, rew_, fin_, info_env = env.step(npy.act[j])
             structured_setitem_(npy_next_obs, j, obs_)
             if info_env:
-                structured_setitem_(fragment.npy.env, (t, j), info_env)
+                structured_setitem_(fragment.npy.env,
+                                    (t, j), info_env)  # `.env[t] <- info`
 
             # `fin_` indicates if `obs_` is terminal and a reset is needed
+            # XXX DO NOT alter the received reward from the terminal step!
             if fin_:
-                # substitute the terminal $s_{t+1}$ with an initial $s_*$ and
-                # zero the actor's recurrent state $h_t = h_*$
-                obs_ = env.reset()
-                actor.reset(j, hx)
+                # substitute the terminal observation $x_{t+1}$ with an initial
+                #  $x_*$, reset the (unobserved) $s_{t+1}$ to $s_*$ and zero
+                #  the actor's recurrent state $h_* \to h_{t+1}$ at env $j$
+                obs_ = env.reset()  # s_{t+1} \to s_*, emit x_* from s_*
+                actor.reset(j, hx)  # reset h_{t+1}
 
+            # update the j-th env in the running context:
+            #  commit $x_{t+1}, r_{t+1}, d_{t+1}$ into `ctx`
             structured_setitem_(npy.obs, j, obs_)
-            npy.rew[j] = rew_
+            npy.rew[j] = rew_  # used in present value even if $d_{t+1}=\top$
             npy.fin[j] = fin_
 
-        # XXX here the `state` update is complete
-        pass
-
-        # finalize out[t]: store $a_t$, $r_{t+1}$ and $d_{t+1}$
-        structured_setitem_(out.act, t, npy.act)
-        out.rew[t] = npy.rew
-        out.fin[t] = npy.fin
-        if hasattr(out, 'next_obs'):
-            structured_setitem_(out.next_obs, t, npy_next_obs)
+        # copy the updated `ctx` to its device-resident copy (`hx` is OK)
+        if pyt_ is not pyt:
+            structured_tensor_copy_(pyt_, pyt)
 
     # write back the most recent recurrent state for the next rollout
     structured_tensor_copy_(context.pyt.hx, hx)
 
-    # push the last observation into the special T+1-th slot. This is enough
-    # for DQN since obs[t] (x_t) and obs[t+1] (x_{t+1}) are consecutive if
-    # fin[t] is False (d_{t+1}=\bot), and DQN methods ignore the target q-value
-    # at x_{t+1} if it is terminal (d_{t+1}=\top and x_{t+1}=s_*).
-    structured_setitem_(out.obs, t + 1, npy.obs)
+    # record the $(x_T, a_{T-1}, r_T, d_T)$ from `ctx` into `out[T]`
+    structured_setitem_(out, t + 1, npy)  # t is len(out.fin) - 1
+    # XXX This is OK for DQN-methods and SRASA since `out[t]` and `out[t+1]`
+    #  are consecutive if $d_{t+1}$ (`out.fin[t+1]`) is False, and together
+    #  contain $x_t, a_t, r_{t+1}$ and $x_{t+1}$. Also DQN methods ignore
+    #  the target q-value at $x_{t+1}$ anyway if $s_{t+1}$ is terminal, i.e.
+    #  $d_{t+1}=\top$, and x_{t+1}=s_*.
+
+    if hasattr(out, 'next_obs'):
+        structured_setitem_(out.next_obs, t + 1, npy_next_obs)
 
     # compute the bootstrapped value estimate for each env
     if hasattr(fragment.pyt, 'bootstrap'):
-        if pyt_ is not pyt:
-            structured_tensor_copy_(pyt_, pyt)
         bootstrap = actor.value(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
         structured_tensor_copy_(fragment.pyt.bootstrap, bootstrap)
 
@@ -789,6 +850,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
 
     # prepare a for the specified number of envs running context
     ctx = context(*envs, pinned=pinned)
+    # `ctx` is $x_*, a_{-1}, r_0, \top, h_0$, where `r_0` is undefined
 
     # fast access to context's aliases
     npy, pyt, hx = ctx.npy, ctx.pyt, None
@@ -796,6 +858,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     # Allocate on-device context and recurrent state, if device is not None
     pyt_ = pyt
     if device is not None:
+        # XXX this also copies data in `pyt` into `pyt_`
         pyt_ = unsafe_apply(pyt_, fn=lambda x: x.to(device))
 
     # render ony in case of a single-env evaluation
@@ -803,24 +866,21 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
 
     rewards, done, t = [], False, 0
     while not done and t < n_steps and fn_render():
-        # move the updated context to its device-resident copy
-        if pyt_ is not pyt:
-            structured_tensor_copy_(pyt_, pyt)
-
-        # actor's step: commit `a_t` into the running context
+        # REACT: $(x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
         act_, hx, _ = actor.step(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
         structured_tensor_copy_(pyt.act, act_)
 
-        # `.step` through a batch of envs
+        # STEP + EMIT: `.step` through a batch of envs
         for j, env in enumerate(envs):
-            # ease interacting with terminated envs
+            # cease interaction with terminated envs
             if npy.fin[j] and t > 0:
                 npy.rew[j] = 0.
                 continue
 
-            # env's step: commit $x_{t+1}$, $r_{t+1}$, and $d_{t+1}$
+            # get $(s_t, a_t) \to (s_{t+1}, x_{t+1}, r_{t+1}, d_{t+1})$
             obs_, rew_, fin_, info_env = env.step(npy.act[j])
 
+            # update the j-th env's '$x_{t+1}, r_{t+1}, d_{t+1}$ in `ctx`
             structured_setitem_(npy.obs, j, obs_)
             npy.rew[j], npy.fin[j] = rew_, fin_
 
@@ -831,4 +891,11 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
         rewards.append(npy.rew.copy())
         t += 1
 
-    return numpy.stack(rewards, axis=0)
+        # move the updated `ctx` to its device-resident torch copy
+        if pyt_ is not pyt:
+            structured_tensor_copy_(pyt_, pyt)
+
+    # compute the bootstrap value $v(x_T)$ (a new `1 x n_envs` tensor)
+    bootstrap = actor.value(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
+
+    return numpy.stack(rewards, axis=0), bootstrap.cpu().numpy()[0]
