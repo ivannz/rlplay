@@ -47,7 +47,7 @@ State.__doc__ = r"""The current state to be acted upon: the current observation
         contains the true current state $s_t$.
     """
 
-Context = namedtuple('Context', ['input', 'hx', 'next_obs'])
+Context = namedtuple('Context', ['state', 'hx', 'next_obs'])
 Context.__doc__ = r"""This is a convenience object, that extends `State` by
     an `hx` and a `next_obs` containers of tensors. The first represents the
     persistent context, e.g. the recurrent state, of the actor at the start of
@@ -409,7 +409,7 @@ def startup(envs, actor, buffer, *, pinned=False):
     -------
     ctx : aliased Context
         The running env-state context which contains properly time synchronised
-        input data for the actor: `.input` is $x_t, a_{t-1}, r_t, d_t$, and
+        input data for the actor: `.state` is $x_t, a_{t-1}, r_t, d_t$, and
         `.hx` is $h_t$. The data in the context is aliased, i.e. `.npy` arrays
         and `.pyt` tensors reference the same underlying data, which allows
         changes in one be reflected in the other.
@@ -455,8 +455,8 @@ def startup(envs, actor, buffer, *, pinned=False):
     context = aliased(Context(pyt, fragment.pyt.hx, pyt.obs),
                       copy=True, pinned=pinned)
 
-    # writable view of `context.pyt.input` with an extra temporal dim
-    unsafe_apply(context.pyt.input, fn=lambda x: x.unsqueeze_(0))  # in-place!
+    # writable view of `context.pyt.state` with an extra temporal dim
+    unsafe_apply(context.pyt.state, fn=lambda x: x.unsqueeze_(0))  # in-place!
     # XXX we do this so that the actor may rely on T x B x ... data on input
 
     # `pyt` is used for interacting with the actor, `npy` -- with the fragment
@@ -650,7 +650,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     npy_next_obs = context.npy.next_obs
 
     # `pyt/npy` is its jagged edge: $x_t, a_{t-1}, r_t$, $d_t$, and $h_t$.
-    npy, pyt = context.npy.input, context.pyt.input
+    npy, pyt = context.npy.state, context.pyt.state
 
     # Allocate on-device context and recurrent state, if device is not None
     pyt_ = pyt
