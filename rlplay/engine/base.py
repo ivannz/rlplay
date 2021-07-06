@@ -165,22 +165,22 @@ class BaseActorModule(torch.nn.Module):
         Details
         -------
         Similar to `torch.nn.LSTM` and other recurrent layers [citation_needed]
-        we assume the initial recurent state to be a ZERO non-differentiable
+        we assume the initial recurrent state to be a ZERO non-differentiable
         tensor.
 
         The seemingly awkward shapes of the tensors in `hx` are rooted in the
-        shapes if hiddent states of torch.nn recurrent layers. For example, 
-        the LSTM layer has `hx = (c, h)`, both having shape
+        shapes if hidden states of torch.nn recurrent layers. For example,
+        the LSTM layer has `hx = (c, h)`, both tensors shaped like
 
-            num_layers * num_directions x n_batch x n_hidden
+            (num_layers * num_directions) x n_batch x n_hidden
 
-        (with the GRU layer's `hx` is a tensor, not a tuple). This 
+        (with the GRU layer's `hx` being just a single tensor, not a tuple).
         """
         assert hx is not None
 
         unsafe_apply(hx, fn=lambda x: x[:, at].zero_())
         # XXX could the actor keep `hx` unchanged in `forward`? No, under the
-        # current api, since `.fin` reflects that the input is related to a
+        # current API, since `.fin` reflects that the input is related to a
         # freshly started trajectory, i.e. only $h_t$ and $x_t$ are defined,
         # while $a_{t-1}$, $r_t$, and $d_t$ are not. `fin` does not tell us
         # anything about whether $h_{t+1}$ should be reset after the actor's
@@ -769,7 +769,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
                 #  $x_*$, reset the (unobserved) $s_{t+1}$ to $s_*$ and zero
                 #  the actor's recurrent state $h_* \to h_{t+1}$ at env $j$
                 obs_ = env.reset()  # s_{t+1} \to s_*, emit x_* from s_*
-                actor.reset(j, hx)  # reset h_{t+1}
+                actor.reset(j, hx)  # reset h_{t+1} to h_0 as j-th env
 
             # update the j-th env in the running context:
             #  commit $x_{t+1}, r_{t+1}, d_{t+1}$ into `ctx`
@@ -786,7 +786,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
     # record the $(x_T, a_{T-1}, r_T, d_T)$ from `ctx` into `out[T]`
     structured_setitem_(out, t + 1, npy)  # t is len(out.fin) - 1
-    # XXX This is OK for DQN-methods and SRASA since `out[t]` and `out[t+1]`
+    # XXX This is OK for DQN-methods and SARSA since `out[t]` and `out[t+1]`
     #  are consecutive if $d_{t+1}$ (`out.fin[t+1]`) is False, and together
     #  contain $x_t, a_t, r_{t+1}$ and $x_{t+1}$. Also DQN methods ignore
     #  the target q-value at $x_{t+1}$ anyway if $s_{t+1}$ is terminal, i.e.
@@ -820,7 +820,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
         then the limit is lifted.
 
     render : bool, default=False
-        Whether to render the visuzlization of the envronment interaction.
+        Whether to render the visualization of the environment interaction.
 
         WARNING: can only be used in len(envs) == 1
 
