@@ -2,7 +2,7 @@
 // https://edcjones.tripod.com/refcount.html
 
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
-                        bool const safe, bool const star);
+                        bool const safe, bool const star, PyObject *kwargs);
 
 int _validate_dict(PyObject *main, PyObject *rest)
 {
@@ -35,7 +35,7 @@ int _validate_dict(PyObject *main, PyObject *rest)
 }
 
 static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
-                             bool const safe, bool const star)
+                             bool const safe, bool const star, PyObject *kwargs)
 {
     PyObject *output = PyDict_New(), *result = NULL;
     if(output == NULL) return NULL;
@@ -55,7 +55,7 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
         }
 
         // `result` is a new object, for which we are now responsible
-        result = _apply(callable, main_, rest_, safe, star);
+        result = _apply(callable, main_, rest_, safe, star, kwargs);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
@@ -98,7 +98,7 @@ int _validate_tuple(PyObject *main, PyObject *rest)
 }
 
 static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest,
-                              bool const safe, bool const star)
+                              bool const safe, bool const star, PyObject *kwargs)
 {
     Py_ssize_t numel = PyTuple_GET_SIZE(main);
     PyObject *output = PyTuple_New(numel), *result = NULL;
@@ -115,7 +115,7 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        result = _apply(callable, main_, rest_, safe, star);
+        result = _apply(callable, main_, rest_, safe, star, kwargs);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
@@ -158,7 +158,7 @@ int _validate_list(PyObject *main, PyObject *rest)
 }
 
 static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
-                             bool const safe, bool const star)
+                             bool const safe, bool const star, PyObject *kwargs)
 {
     Py_ssize_t numel = PyList_GET_SIZE(main);
     PyObject *output = PyList_New(numel), *result = NULL;
@@ -175,7 +175,7 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        result = _apply(callable, main_, rest_, safe, star);
+        result = _apply(callable, main_, rest_, safe, star, kwargs);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
@@ -191,7 +191,7 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
 }
 
 static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *rest,
-                                bool const safe, bool const star)
+                                bool const safe, bool const star, PyObject *kwargs)
 {
     // XXX it's unlikely that we will ever use this branch, because as docs
     // it is impossible to know the type of keys of a mapping at runtime,
@@ -220,7 +220,7 @@ static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *re
 
         Py_DECREF(result);
 
-        result = _apply(callable, main_, rest_, safe, star);
+        result = _apply(callable, main_, rest_, safe, star, kwargs);
         if(result == NULL) break;
 
         PyDict_SetItem(output, key, result);
@@ -236,7 +236,7 @@ static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *re
 }
 
 static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
-                             bool const star)
+                             bool const star, PyObject *kwargs)
 {
     PyObject *output;
 
@@ -254,14 +254,14 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
     }
 
     if (star) {
-        output = PyObject_Call(callable, args, NULL);
+        output = PyObject_Call(callable, args, kwargs);
         Py_DECREF(args);
 
     } else {
         PyObject *one = PyTuple_New(1);
         PyTuple_SET_ITEM(one, 0, args);
 
-        output = PyObject_Call(callable, one, NULL);
+        output = PyObject_Call(callable, one, kwargs);
         Py_DECREF(one);
     }
 
@@ -269,7 +269,7 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
 }
 
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
-                        bool const safe, bool const star)
+                        bool const safe, bool const star, PyObject *kwargs)
 {
     PyObject *result;
 
@@ -279,7 +279,7 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                 return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_dict(callable, main, rest, safe, star);
+        result = _apply_dict(callable, main, rest, safe, star, kwargs);
         Py_LeaveRecursiveCall();
 
     } else if(PyTuple_Check(main)) {
@@ -288,7 +288,7 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                 return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_tuple(callable, main, rest, safe, star);
+        result = _apply_tuple(callable, main, rest, safe, star, kwargs);
         Py_LeaveRecursiveCall();
 
     } else if(PyList_Check(main)) {
@@ -297,11 +297,11 @@ static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                 return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_list(callable, main, rest, safe, star);
+        result = _apply_list(callable, main, rest, safe, star, kwargs);
         Py_LeaveRecursiveCall();
 
     } else {
-        result = _apply_base(callable, main, rest, star);
+        result = _apply_base(callable, main, rest, star, kwargs);
 
     }
 
@@ -315,6 +315,7 @@ static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
     int safe = 1, star = 1;
     PyObject *callable = NULL, *main = NULL;
 
+    //handle `apply(fn, main, *rest, *, ...)`
     Py_ssize_t len = PyTuple_GET_SIZE(args);
     PyObject *first = PyTuple_GetSlice(args, 0, 2);
     PyObject *rest = PyTuple_GetSlice(args, 2, len);
@@ -328,24 +329,40 @@ static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
+    //handle `apply(..., *, _star, _safe, **kwargs)`
     if (kwargs) {
+        static char *kwlist[] = {"_safe", "_star", NULL};
+
         PyObject *empty = PyTuple_New(0);
         if (empty == NULL) return NULL;
 
-        static char *kwlist[] = {"safe", "star", NULL};
+        PyObject* own = PyDict_New();
+        if (empty == NULL) {
+            Py_DECREF(empty);
+            return NULL;
+        }
+
+        for(int p = 0; kwlist[p] != NULL; p++) {
+            PyObject* arg = PyDict_GetItemString(kwargs, kwlist[p]);
+            if (arg == NULL) continue;
+
+            PyDict_SetItemString(own, kwlist[p], arg);
+            PyDict_DelItemString(kwargs, kwlist[p]);
+        }
+
         int parsed = PyArg_ParseTupleAndKeywords(
-                empty, kwargs, "|$pp:apply", kwlist, &safe, &star);
+                empty, own, "|$pp:apply", kwlist, &safe, &star);
 
         Py_DECREF(empty);
+        Py_DECREF(own);
         if (!parsed) return NULL;
     }
 
-    PyObject *result = _apply(callable, main, rest, safe, star);
+    PyObject *result = _apply(callable, main, rest, safe, star, kwargs);
     Py_DECREF(rest);
 
     return result;
 }
-
 
 static PyMethodDef modapply_methods[] = {
     {

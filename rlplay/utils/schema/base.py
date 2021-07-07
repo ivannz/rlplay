@@ -177,7 +177,7 @@ if USE_C_APPLY:
             `/torch/utils/data/_utils/collate.py#L43-L86`
             as of commit `b80c6f863f2327c712c478f67c248b94d66b65ac` (2021-04-11)
         """
-        return c_apply(fn, *objects, safe=True)
+        return c_apply(fn, *objects, _safe=True)
 
     def apply_single(main, *, fn):
         """A version of `apply` optimized for use with one structured container.
@@ -191,8 +191,8 @@ if USE_C_APPLY:
         -------
         Foregoes all type, length or key consistency checks.
         """
-        return c_apply(fn, main, *rest, safe=True)
+        return c_apply(fn, main, *rest, _safe=True)
 
     def apply_pair(main, other, *, fn):
         """`Apply` optimized for use with paired structured containers."""
-        return c_apply(fn, main, other, safe=True)
+        return c_apply(fn, main, other, _safe=True)
