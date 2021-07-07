@@ -2,9 +2,8 @@ import torch
 import numpy
 
 from collections import namedtuple
-from operator import setitem
 
-from ..utils.schema.base import unsafe_apply
+from ._apply import suply, tuply, setitem, getitem
 from ..utils.schema.shared import aliased, torchify
 
 
@@ -108,22 +107,15 @@ Fragment.__doc__ = r"""A `(1 + T) x batch` fragment of the trajectories of
     """
 
 
-def structured_setitem_(dst, index, value):
-    """Do `dst[index] = value` in `dst` nested container with values coming
-    from another with IDENTICAL structure.
-    """
-    unsafe_apply(dst, value, fn=lambda d, v: setitem(d, index, v))
-
-
-def structured_tensor_copy_(dst, src, *, at=None):
+def tensor_copy_(dst, src, *, at=None):
     """Copy tensor data from the `src` nested container into torch tensors
     of the `dst` nested container (with IDENTICAL structure) at the specified
     index (int, tuple of ints, or slices).
     """
-    if at is None:
-        return unsafe_apply(dst, src, fn=torch.Tensor.copy_)
+    if at is not None:
+        dst = suply(getitem, dst, index=at)
 
-    return unsafe_apply(dst, src, fn=lambda d, s: d[at].copy_(s))
+    return suply(torch.Tensor.copy_, dst, src)
 
 
 class BaseActorModule(torch.nn.Module):
@@ -178,7 +170,7 @@ class BaseActorModule(torch.nn.Module):
         """
         assert hx is not None
 
-        unsafe_apply(hx, fn=lambda x: x[:, at].zero_())
+        suply(lambda x: x[:, at].zero_(), hx)
         # XXX could the actor keep `hx` unchanged in `forward`? No, under the
         # current API, since `.fin` reflects that the input is related to a
         # freshly started trajectory, i.e. only $h_t$ and $x_t$ are defined,
@@ -362,7 +354,7 @@ def prepare(
                      1 + n_steps, n_envs, shared=shared, pinned=pinned)
 
     # make a single pass through the actor with one `1 x n_envs x ...` batch
-    pyt = unsafe_apply(state, fn=lambda x: x[:1].to(device))
+    pyt = suply(lambda x: x[:1].to(device), state)
     unused_act, hx, d_act_info = actor.step(pyt.obs, pyt.act,
                                             pyt.rew, pyt.fin, hx=None)
     # XXX `act_` is expected to have identical structure to `unused_act`
@@ -370,12 +362,11 @@ def prepare(
 
     # get one time slice from the actor's info `n_envs x ...` and expand into
     #  an `n_steps x n_envs x ...` structured buffer.
-    d_act_info = torchify(unsafe_apply(d_act_info, fn=lambda x: x[0].cpu()),
+    d_act_info = torchify(suply(lambda x: x[0].cpu(), d_act_info),
                           n_steps, shared=shared, pinned=pinned)
 
     # the actor fully specifies its context `hx`, so we torchify it as is
-    hx = torchify(unsafe_apply(hx, fn=torch.Tensor.cpu),
-                  shared=shared, pinned=pinned)
+    hx = torchify(suply(torch.Tensor.cpu, hx), shared=shared, pinned=pinned)
 
     # bundle the buffers into a trajectory fragment
     return Fragment(state=state, actor=d_act_info, env=d_env_info,
@@ -434,18 +425,17 @@ def startup(envs, actor, buffer, *, pinned=False):
     fragment = aliased(buffer)  # just a zero-copy pyt-npy alias
 
     # reset the initial recurrent state of the actor, `hx`, to zero
-    unsafe_apply(fragment.pyt.hx, fn=torch.Tensor.zero_)
+    suply(torch.Tensor.zero_, fragment.pyt.hx)
 
     # Fetch a single [B x ?] observation (a VIEW into fragment for now)
-    npy, pyt = unsafe_apply((fragment.npy.state, fragment.pyt.state,),
-                            fn=lambda x: x[0])
+    npy, pyt = suply(lambda x: x[0], (fragment.npy.state, fragment.pyt.state,))
 
     # Flag the state as having just been reset, meaning that the previous
     #  reward and action are invalid.
     npy.fin[:] = True
     npy.rew[:] = 0.  # zero `.rew`, leave `.act` undefined
     for j, env in enumerate(envs):
-        structured_setitem_(npy.obs, j, env.reset())  # x_0 = s_*
+        suply(setitem, npy.obs, env.reset(), index=j)  # x_0 = s_*
         actor.reset(j, fragment.pyt.hx)  # h_0 = h_*
 
     # Create `context`, a dedicated container of [B x ?] aliased copy of
@@ -455,7 +445,7 @@ def startup(envs, actor, buffer, *, pinned=False):
                       copy=True, pinned=pinned)
 
     # writable view of `context.pyt.state` with an extra temporal dim
-    unsafe_apply(context.pyt.state, fn=lambda x: x.unsqueeze_(0))  # in-place!
+    suply(torch.Tensor.unsqueeze_, context.pyt.state, dim=0)  # in-place!
     # XXX we do this so that the actor may rely on T x B x ... data on input
 
     # `pyt` is used for interacting with the actor, `npy` -- with the fragment
@@ -510,14 +500,14 @@ def context(*envs, pinned=False):
 
     # torchify and alias, then add unit-time dim to `.pyt` in-place
     state = aliased(torchify(state_, len(envs), pinned=pinned, copy=True))
-    unsafe_apply(state.pyt, fn=lambda x: x.unsqueeze_(0))
+    suply(torch.Tensor.unsqueeze_, state.pyt, dim=0)
 
     # Flag the state as having just been reset, meaning that the previous
     #  reward and action are invalid.
     state.npy.fin[:] = True
     state.npy.rew[:] = 0.  # zero `.rew`, leave `.act` undefined
     for j, env in enumerate(envs):
-        structured_setitem_(state.npy.obs, j, env.reset())  # x_0 = s_*
+        suply(setitem, state.npy.obs, env.reset(), index=j)  # x_0 = s_*
 
     return state
 
@@ -693,7 +683,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     """
 
     # write the initial recurrent state of the actor to the shared buffer
-    structured_tensor_copy_(fragment.pyt.hx, context.pyt.hx)
+    tensor_copy_(fragment.pyt.hx, context.pyt.hx)
 
     # shorthands for fast access
     # `out[t]` is $x_t, a_{t-1}, r_t$, and $d_t$, for $x_t$ defined above
@@ -707,7 +697,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     pyt_ = pyt
     if device is not None:
         # XXX this also copies data in `pyt` into `pyt_`
-        pyt_, hx = unsafe_apply((pyt_, hx), fn=lambda x: x.to(device))
+        pyt_, hx = suply(torch.Tensor.to, (pyt_, hx), device=device)
 
     # XXX stepper uses a single actor for a batch of environments:
     # * one mode of exploration, poor randomness
@@ -721,9 +711,9 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
         pass
 
         # copy the state $x_t, a_{t-1}, r_t$, and $d_t$ from `ctx` to `out[t]`
-        structured_setitem_(out, t, npy)  # XXX is torch faster?
+        suply(setitem, out, npy, index=t)  # XXX is torch faster?
         if hasattr(out, 'next_obs'):
-            structured_setitem_(out.next_obs, t, npy_next_obs)
+            suply(setitem, out.next_obs, npy.next_obs, index=t)
 
         # REACT: $(a_t, h_{t+1})$ are actor's reaction to `.state[t]` and `hx`,
         #  i.e. $(x_t, a_{t-1}, r_t, d_t)$, and $h_t$, respectively.
@@ -736,11 +726,11 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
         # set SHOULD NOT be updated (dim=1).
 
         # the actor may return device-resident tensors, so we copy them here
-        structured_tensor_copy_(pyt.act, act_)  # commit $a_t$ into `ctx`
+        tensor_copy_(pyt.act, act_)  # commit $a_t$ into `ctx`
         if info_actor:
             # fragment.pyt is likely to have `is_shared() = True`, so it cannot
             #  be in the pinned memory.
-            structured_tensor_copy_(fragment.pyt.actor, info_actor,
+            tensor_copy_(fragment.pyt.actor, info_actor,
                                     at=slice(t, t + 1))  # `.actor[t] <- info`
 
         # STEP + EMIT: `.step` through a batch of envs
@@ -757,10 +747,10 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
             # get $(s_t, a_t) \to (s_{t+1}, x_{t+1}, r_{t+1}, d_{t+1})$
             obs_, rew_, fin_, info_env = env.step(npy.act[j])
-            structured_setitem_(npy_next_obs, j, obs_)
+            suply(setitem, npy_next_obs, obs_, index=j)
             if info_env:
-                structured_setitem_(fragment.npy.env,
-                                    (t, j), info_env)  # `.env[t] <- info`
+                suply(setitem, fragment.npy.env, info_env,
+                      index=(t, j))  # `.env[t, j] <- info`
 
             # `fin_` indicates if `obs_` is terminal and a reset is needed
             # XXX DO NOT alter the received reward from the terminal step!
@@ -773,19 +763,19 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
             # update the j-th env in the running context:
             #  commit $x_{t+1}, r_{t+1}, d_{t+1}$ into `ctx`
-            structured_setitem_(npy.obs, j, obs_)
+            suply(setitem, npy.obs, obs_, index=j)
             npy.rew[j] = rew_  # used in present value even if $d_{t+1}=\top$
             npy.fin[j] = fin_
 
         # copy the updated `ctx` to its device-resident copy (`hx` is OK)
         if pyt_ is not pyt:
-            structured_tensor_copy_(pyt_, pyt)
+            tensor_copy_(pyt_, pyt)
 
     # write back the most recent recurrent state for the next rollout
-    structured_tensor_copy_(context.pyt.hx, hx)
+    tensor_copy_(context.pyt.hx, hx)
 
     # record the $(x_T, a_{T-1}, r_T, d_T)$ from `ctx` into `out[T]`
-    structured_setitem_(out, t + 1, npy)  # t is len(out.fin) - 1
+    suply(setitem, out, npy, index=t + 1)  # t is len(out.fin) - 1
     # XXX This is OK for DQN-methods and SARSA since `out[t]` and `out[t+1]`
     #  are consecutive if $d_{t+1}$ (`out.fin[t+1]`) is False, and together
     #  contain $x_t, a_t, r_{t+1}$ and $x_{t+1}$. Also DQN methods ignore
@@ -793,12 +783,12 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     #  $d_{t+1}=\top$, and x_{t+1}=s_*.
 
     if hasattr(out, 'next_obs'):
-        structured_setitem_(out.next_obs, t + 1, npy_next_obs)
+        suply(setitem, out.next_obs, npy_next_obs, index=t + 1)
 
     # compute the bootstrapped value estimate for each env
     if hasattr(fragment.pyt, 'bootstrap'):
         bootstrap = actor.value(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
-        structured_tensor_copy_(fragment.pyt.bootstrap, bootstrap)
+        tensor_copy_(fragment.pyt.bootstrap, bootstrap)
 
     return True
 
@@ -859,7 +849,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     pyt_ = pyt
     if device is not None:
         # XXX this also copies data in `pyt` into `pyt_`
-        pyt_ = unsafe_apply(pyt_, fn=lambda x: x.to(device))
+        pyt_ = suply(torch.Tensor.to, pyt_, device=device)
 
     # render ony in case of a single-env evaluation
     fn_render = envs[0].render if len(envs) == 1 and render else lambda: True
@@ -868,7 +858,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     while not done and t < n_steps and fn_render():
         # REACT: $(x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
         act_, hx, _ = actor.step(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
-        structured_tensor_copy_(pyt.act, act_)
+        tensor_copy_(pyt.act, act_)
 
         # STEP + EMIT: `.step` through a batch of envs
         for j, env in enumerate(envs):
@@ -881,7 +871,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
             obs_, rew_, fin_, info_env = env.step(npy.act[j])
 
             # update the j-th env's '$x_{t+1}, r_{t+1}, d_{t+1}$ in `ctx`
-            structured_setitem_(npy.obs, j, obs_)
+            suply(setitem, npy.obs, obs_, index=j)
             npy.rew[j], npy.fin[j] = rew_, fin_
 
         # stop only if all environments have been terminated
@@ -893,7 +883,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
 
         # move the updated `ctx` to its device-resident torch copy
         if pyt_ is not pyt:
-            structured_tensor_copy_(pyt_, pyt)
+            tensor_copy_(pyt_, pyt)
 
     # compute the bootstrap value $v(x_T)$ (a new `1 x n_envs` tensor)
     bootstrap = actor.value(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)

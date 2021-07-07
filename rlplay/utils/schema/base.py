@@ -1,10 +1,6 @@
 from collections import abc
 from itertools import repeat
 
-from ._apply import apply as c_apply
-
-USE_C_APPLY = True
-
 
 def apply(*objects, fn):
     """Traverse nested structured containers (dict, list, or tuple) of objects.
@@ -165,34 +161,3 @@ def apply_pair(main, other, *, fn):
 
         # ... and immutable to tuple, keeping in mind special namedtuples
         return getattr(main, '_make', tuple)(values)
-
-
-if USE_C_APPLY:
-    def apply(*objects, fn):
-        """Traverse nested structured containers (dict, list, or tuple) of objects.
-
-        Details
-        -------
-        Inspired by the logic of `torch_collate` in traversing structured objects:
-            `/torch/utils/data/_utils/collate.py#L43-L86`
-            as of commit `b80c6f863f2327c712c478f67c248b94d66b65ac` (2021-04-11)
-        """
-        return c_apply(fn, *objects, _safe=True)
-
-    def apply_single(main, *, fn):
-        """A version of `apply` optimized for use with one structured container.
-        """
-        return c_apply(fn, main)
-
-    def unsafe_apply(main, *rest, fn):
-        """`apply` for identically structured containers.
-
-        Details
-        -------
-        Foregoes all type, length or key consistency checks.
-        """
-        return c_apply(fn, main, *rest, _safe=True)
-
-    def apply_pair(main, other, *, fn):
-        """`Apply` optimized for use with paired structured containers."""
-        return c_apply(fn, main, other, _safe=True)

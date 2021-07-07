@@ -28,7 +28,7 @@ setup(
     ],
     ext_modules=[
         Extension(
-            "rlplay.utils.schema._apply", [
+            "rlplay.engine._apply", [
                 "rlplay/engine/apply.cpp",
             ], extra_compile_args=[
                 "-O3", "-Ofast"
