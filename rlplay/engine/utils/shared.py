@@ -5,8 +5,6 @@ from ctypes import c_byte
 from collections import namedtuple
 
 from .apply import suply
-from . import multiprocessing as mp
-
 
 Aliased = namedtuple('Aliased', ['npy', 'pyt'])
 Aliased.__doc__ = """An aliased pair of numpy-torch data.
@@ -267,77 +265,3 @@ def aliased(ref, *leading, copy=False, pinned=False, shared=False):
 
     pyt = torchify(ref, *leading, pinned=pinned, shared=shared, copy=copy)
     return Aliased(npy=numpify(pyt), pyt=pyt)
-
-
-class PickleShared:
-    """Pickle for numpy arrays with storage in shared memory.
-
-    Details
-    -------
-    Subclassing numpy.ndarray is a bad idea. We can override `__reduce__` to
-    make it aware of the shared array's special pickling, instead of array's
-    default which forces a copy (because it doesn't own the storage). However,
-    the result will not 100% compatible with a true array: the reduction
-    mechanism has no legitimate way of knowing offsets into the underlying
-    storage, which are necessary in certain types of views or slices (rather
-    difficult or hacky to compute using `__array_interface__`).
-
-    Instead we create a special object, the purpose of which is to let the
-    shared storage handle its own pickling, then get passed to a subprocess,
-    and finally rebuilt as a array.
-    """
-    __slots__ = 'shape', 'dtype', 'buffer'
-
-    def __init__(self, shape, dtype, buffer):
-        self.shape, self.dtype, self.buffer = shape, dtype, buffer
-
-    @classmethod
-    def empty(cls, *shape, dtype, ctx=mp):
-        """Create an empty array of specified dtype and shape in shared memory."""
-        if len(shape) == 1 and isinstance(shape[0], tuple):
-            shape = shape[0]
-
-        # let numpy handle the input dtype specs (`dtype.itemsize` is in bytes)
-        dtype = numpy.dtype(dtype)
-
-        # Although numpy's dtype typecodes mostly coincide with codes from
-        #  python's std array, we allocate `nbytes` of `c_byte` shared memory
-        n_bytes = int(numpy.prod(shape)) * dtype.itemsize
-
-        return cls(shape, dtype, ctx.RawArray(c_byte, n_bytes))
-
-    def numpy(self):
-        """Rebuild the array with storage in the shared memory."""
-        return numpy.ndarray(self.shape, dtype=self.dtype, buffer=self.buffer)
-
-    @classmethod
-    def from_numpy(cls, array, *leading, copy=True, ctx=mp):
-        """Create a new shared array like the one given with extra leading dims."""
-        shm = cls.empty(*leading, *array.shape, dtype=array.dtype, ctx=ctx)
-        if copy:
-            # temporarily rebuild to copy the data
-            numpy.copyto(shm.numpy(), array, casting='no')
-        return shm
-
-    def __call__(self):
-        return self.numpy()
-
-    @classmethod
-    def from_structured(cls, struct, *leading, ctx=mp):
-        """Recursively allocate array in shared memory."""
-        def _empty_like(npy):
-            if isinstance(npy, numpy.ndarray):
-                return cls.from_numpy(npy, *leading, ctx=ctx)
-            raise TypeError(f'Unrecognized type `{type(npy)}`')
-
-        return suply(_empty_like, struct)
-
-    @classmethod
-    def to_structured(cls, struct):
-        """Recursively rebuild the shared structured data."""
-        def _build(sh):
-            if isinstance(sh, cls):
-                return sh.numpy()
-            raise TypeError(f'Unrecognized type `{type(sh)}`')
-
-        return suply(_build, struct)
