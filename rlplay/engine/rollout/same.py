@@ -2,7 +2,7 @@ import torch
 import numpy
 
 from ..base import prepare, startup, collect
-from ...utils.schema.base import unsafe_apply
+from ..utils.apply import suply
 
 
 def rollout(envs, actor, n_steps=51, *, sticky=False, device=None):
@@ -28,7 +28,7 @@ def rollout(envs, actor, n_steps=51, *, sticky=False, device=None):
             # move to the specified device
             batch = fragment.pyt
             if device.type == 'cuda':
-                batch = unsafe_apply(fragment.pyt, fn=to_device)
+                batch = suply(to_device, fragment.pyt)
 
             yield batch
 

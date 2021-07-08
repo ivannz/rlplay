@@ -11,8 +11,8 @@ from copy import deepcopy
 from collections import namedtuple
 
 from ..base import prepare, startup, collect
-from ..utils import get_context, CloudpickleSpawner
-from ...utils.schema.shared import Aliased, numpify, torchify
+from ..utils.multiprocessing import get_context, CloudpickleSpawner
+from ..utils.shared import Aliased, numpify, torchify
 
 
 Control = namedtuple('Control', ['reflock', 'barrier', 'error'])

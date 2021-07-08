@@ -4,14 +4,14 @@ import numpy
 from copy import deepcopy
 from collections import namedtuple
 
-from torch.multiprocessing import start_processes
 from queue import Empty as QueueEmpty
 
 from ..base import prepare, startup, collect
-from ..utils import get_context, CloudpickleSpawner
 
-from ...utils.schema.base import unsafe_apply
-from ...utils.schema.shared import Aliased, numpify, torchify
+from ..utils.multiprocessing import get_context, CloudpickleSpawner
+from ..utils.multiprocessing import start_processes
+from ..utils.apply import suply, tuply
+from ..utils.shared import Aliased, numpify, torchify
 
 
 Control = namedtuple('Control', ['reflock', 'empty', 'ready'])
@@ -124,8 +124,7 @@ def rollout(
     #  (non-paged physical memory for faster host-device transfers)
     # XXX `torch.cat` with `out=None` always makes allocates a new tensor.
     batch_buffer = torchify(
-        unsafe_apply(*(ref,) * n_per_batch,
-                     fn=lambda *x: torch.cat(x, dim=1)),  # batch dim!
+        tuply(torch.cat, *(ref,) * n_per_batch, dim=1),  # batch dim!
         pinned=pinned, shared=False)
 
     # create buffers for trajectory fragments in the shared memory
@@ -165,7 +164,7 @@ def rollout(
 
             # we collate the buffers before releasing the buffers
             ready = (buffers[j] for j in indices)
-            batch = unsafe_apply(batch_buffer, *ready, fn=collate_and_move)
+            batch = suply(collate_and_move, batch_buffer, *ready)
 
             # repurpose buffers for later batches
             for j in indices:

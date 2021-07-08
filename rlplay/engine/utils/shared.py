@@ -1,12 +1,11 @@
 import torch
 import numpy
 
-import multiprocessing as mp
-
 from ctypes import c_byte
 from collections import namedtuple
 
-from .base import apply_single
+from .apply import suply
+from . import multiprocessing as mp
 
 
 Aliased = namedtuple('Aliased', ['npy', 'pyt'])
@@ -132,7 +131,7 @@ def torchify(obj, *leading, copy=False, pinned=False, shared=False):
 
         return out
 
-    return apply_single(obj, fn=_as_tensor)
+    return suply(_as_tensor, obj)
 
 
 def numpify(obj, *leading, copy=False, ctx=None):
@@ -203,7 +202,7 @@ def numpify(obj, *leading, copy=False, ctx=None):
 
         return out
 
-    return apply_single(obj, fn=_as_array)
+    return suply(_as_array, obj)
 
 
 def aliased(ref, *leading, copy=False, pinned=False, shared=False):
@@ -331,7 +330,7 @@ class PickleShared:
                 return cls.from_numpy(npy, *leading, ctx=ctx)
             raise TypeError(f'Unrecognized type `{type(npy)}`')
 
-        return apply_single(struct, fn=_empty_like)
+        return suply(_empty_like, struct)
 
     @classmethod
     def to_structured(cls, struct):
@@ -341,4 +340,4 @@ class PickleShared:
                 return sh.numpy()
             raise TypeError(f'Unrecognized type `{type(sh)}`')
 
-        return apply_single(struct, fn=_build)
+        return suply(_build, struct)
