@@ -499,7 +499,7 @@ static PyMethodDef modapply_methods[] = {
 
 static struct PyModuleDef moduledef = {
         PyModuleDef_HEAD_INIT,
-        "_apply",
+        "apply",
         NULL,
         -1,
         modapply_methods,
@@ -507,7 +507,7 @@ static struct PyModuleDef moduledef = {
 
 
 PyMODINIT_FUNC
-PyInit__apply(void)
+PyInit_apply(void)
 {
     return PyModule_Create(&moduledef);
 }

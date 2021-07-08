@@ -18,6 +18,7 @@ setup(
         'rlplay.utils.schema',  # dict-list-tuple nested structures
         'rlplay.engine',  # returns, andvantages, and rollout
         'rlplay.engine.rollout',  # rollout fragment collectors
+        'rlplay.engine.utils',  # mutliprocessing, xxply and shared
     ],
     install_requires=[
         'torch',
@@ -28,8 +29,8 @@ setup(
     ],
     ext_modules=[
         Extension(
-            "rlplay.engine._apply", [
-                "rlplay/engine/apply.cpp",
+            "rlplay.engine.utils.apply", [
+                "rlplay/engine/utils/apply.cpp",
             ], extra_compile_args=[
                 "-O3", "-Ofast"
             ], language="c++",
