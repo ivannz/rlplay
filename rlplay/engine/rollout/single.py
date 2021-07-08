@@ -10,7 +10,7 @@ import numpy
 from copy import deepcopy
 from collections import namedtuple
 
-from ..base import prepare, startup, collect
+from ..core import prepare, startup, collect
 
 from ..utils.apply import suply
 from ..utils.multiprocessing import get_context, CloudpickleSpawner

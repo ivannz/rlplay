@@ -6,7 +6,7 @@ from collections import namedtuple
 
 from queue import Empty as QueueEmpty
 
-from ..base import prepare, startup, collect
+from ..core import prepare, startup, collect
 
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.multiprocessing import start_processes

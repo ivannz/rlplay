@@ -1,7 +1,7 @@
 import torch
 import numpy
 
-from ..base import prepare, startup, collect
+from ..core import prepare, startup, collect
 
 from ..utils.apply import suply
 
