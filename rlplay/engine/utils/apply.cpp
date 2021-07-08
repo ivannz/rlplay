@@ -1,6 +1,63 @@
 #include <Python.h>
 // https://edcjones.tripod.com/refcount.html
 
+static const char *__doc__ = "\n"
+"apply(callable, *objects, _safe=True, _star=True, **kwargs)\n"
+"\n"
+"Compute the function using the leaf data of the nested objects as arguments.\n"
+"\n"
+"A `nested object` is either a python object (object, str, numpy array, torch\n"
+"tensor, etc.) or a subclass of one of python's builtin containers (dict,\n"
+"list, or tuple), that consists of other nested objects.\n"
+"\n"
+"Parameters\n"
+"----------\n"
+"callable : callable\n"
+"    A callable object to be applied to the leaf data.\n"
+"\n"
+"*objects : nested objects\n"
+"    All remaining positionals to `apply` are assumed to be nested objects,\n"
+"    that supply arguments for the callable from their leaf data.\n"
+"\n"
+"_safe : bool, default=True\n"
+"    Disables structural safety checks when more than one nested object has\n"
+"    been supplied.\n"
+"    SEGFAULTs if the nested objects do not have IDENTICAL STRUCTURE.\n"
+"\n"
+"_star : bool, default=True\n"
+"    Determines how to pass the leaf data to the callable.\n"
+"    If `True` (star-apply), then we call\n"
+"        `callable(d_1, d_2, ..., d_n, **kwargs)`,\n"
+"\n"
+"    otherwise packages the leaf data into a tuple (tuple-apply) and calls\n"
+"        `callable((d_1, d_2, ..., d_n), **kwargs)`\n"
+"\n"
+"    even for `n=1`.\n"
+"\n"
+"Returns\n"
+"-------\n"
+"result : a new nested object\n"
+"    The nested object that contains the values returned by `callable`.\n"
+"    Guaranteed to have IDENTICAL structure as the first nested object\n"
+"    in objects.\n"
+"\n"
+"Details\n"
+"-------\n"
+"For a single container `apply` with `_star=True` is roughly equivalent to\n"
+">>> def apply(fn, container, **kwargs):\n"
+">>>     if isinstance(container, dict):\n"
+">>>         return {k: apply(fn, v, **kwargs)\n"
+">>>                 for k, v in container.items()}\n"
+">>>\n"
+">>>     if isinstance(container, (tuple, list)):\n"
+">>>         return type(container)([apply(fn, v, **kwargs)\n"
+">>>                                 for v in container])\n"
+">>>\n"
+">>>     # `container` is not a is actually a leaf\n"
+">>>     return fn(container, **kwargs)\n"
+"\n"
+;
+
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                         bool const safe, bool const star, PyObject *kwargs);
 
@@ -425,7 +482,7 @@ static PyObject* t_ply(PyObject *self, PyObject *args, PyObject *kwargs)
     return result;
 }
 
-static PyObject *getitem(PyObject *self, PyObject *args, PyObject *kwargs)
+static PyObject* getitem(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     static char *kwlist[] = {"", "index", NULL};
 
@@ -438,7 +495,7 @@ static PyObject *getitem(PyObject *self, PyObject *args, PyObject *kwargs)
     return PyObject_GetItem(object, index);
 }
 
-static PyObject * setitem(PyObject *self, PyObject *args, PyObject *kwargs)
+static PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     static char *kwlist[] = {"", "", "index", NULL};
 
@@ -450,7 +507,30 @@ static PyObject * setitem(PyObject *self, PyObject *args, PyObject *kwargs)
 
     if (-1 == PyObject_SetItem(object, index, value))
         return NULL;
+
     Py_RETURN_NONE;
+}
+
+static PyObject* is_sequence(PyObject *self, PyObject *object)
+{
+    if(PySequence_Check(object)) {
+        Py_RETURN_TRUE;
+
+    } else {
+        Py_RETURN_FALSE;
+
+    }
+}
+
+static PyObject* is_mapping(PyObject *self, PyObject *object)
+{
+    if(PyMapping_Check(object)) {
+        Py_RETURN_TRUE;
+
+    } else {
+        Py_RETURN_FALSE;
+
+    }
 }
 
 static PyMethodDef modapply_methods[] = {
@@ -458,7 +538,7 @@ static PyMethodDef modapply_methods[] = {
         "apply",
         (PyCFunction) apply,
         METH_VARARGS | METH_KEYWORDS,
-        "Pure C implementation of apply, with optional safety checks.",
+        __doc__,
     }, {
         "suply",
         (PyCFunction) suply,
@@ -489,6 +569,16 @@ static PyMethodDef modapply_methods[] = {
         (PyCFunction) setitem,
         METH_VARARGS | METH_KEYWORDS,
         "setitem(object, value, *, index) does object[index] = value",
+    }, {
+        "is_sequence",
+        (PyCFunction) is_sequence,
+        METH_O,
+        NULL,
+    }, {
+        "is_mapping",
+        (PyCFunction) is_mapping,
+        METH_O,
+        NULL,
     }, {
         NULL,
         NULL,

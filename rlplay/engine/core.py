@@ -115,7 +115,15 @@ def tensor_copy_(dst, src, *, at=None):
     if at is not None:
         dst = suply(getitem, dst, index=at)
 
-    return suply(torch.Tensor.copy_, dst, src)
+    suply(torch.Tensor.copy_, dst, src)
+
+
+def numpy_copy_(dst, src, *, at=None):
+    """Copy numpy data between nested containers with IDENTICAL structure."""
+    if at is not None:
+        dst = suply(getitem, dst, index=at)
+
+    suply(numpy.copyto, dst, src, casting='same_kind')
 
 
 class BaseActorModule(torch.nn.Module):
@@ -428,7 +436,8 @@ def startup(envs, actor, buffer, *, pinned=False):
     suply(torch.Tensor.zero_, fragment.pyt.hx)
 
     # Fetch a single [B x ?] observation (a VIEW into fragment for now)
-    npy, pyt = suply(lambda x: x[0], (fragment.npy.state, fragment.pyt.state,))
+    npy, pyt = suply(getitem, (fragment.npy.state, fragment.pyt.state,),
+                     index=0)
 
     # Flag the state as having just been reset, meaning that the previous
     #  reward and action are invalid.
@@ -731,7 +740,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
             # fragment.pyt is likely to have `is_shared() = True`, so it cannot
             #  be in the pinned memory.
             tensor_copy_(fragment.pyt.actor, info_actor,
-                                    at=slice(t, t + 1))  # `.actor[t] <- info`
+                         at=slice(t, t + 1))  # `.actor[t] <- info`
 
         # STEP + EMIT: `.step` through a batch of envs
         for j, env in enumerate(envs):
