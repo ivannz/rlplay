@@ -10,7 +10,7 @@ from ..core import prepare, startup, collect
 
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.multiprocessing import start_processes
-from ..utils.apply import suply, tuply
+from ..utils.apply import suply, tuply, getitem
 from ..utils.shared import Aliased, numpify, torchify
 
 
@@ -128,14 +128,17 @@ def rollout(
     if close:
         env.close()
 
-    # pre-allocate a buffer in the pinned memory for collated micro-batches
+    # pre-allocate a buffer for the collated batch
     #  (non-paged physical memory for faster host-device transfers)
-    # XXX `torch.cat` with `out=None` always makes allocates a new tensor.
-    # batch_buffer = torchify(
-    #     tuply(torch.cat, *(ref,) * n_per_batch, dim=1),  # batch dim!
-    #     pinned=pinned, shared=False)
-    # batch_buffer = suply(torch.Tensor.to, batch_buffer,
-    #                      device=device, non_blocking=True)
+    # XXX `torch.cat` and `.stack` always allocate a new tensor
+    stacked = suply(torch.Tensor.to,
+                    tuply(torch.stack, *(ref,) * n_per_batch, dim=1),
+                    device=device)
+
+    # create slice views along dim=1 and a flattened view into the stacked data
+    batch = suply(torch.flatten, stacked, start_dim=1, end_dim=2)
+    batch_slice = tuple([suply(getitem, stacked, index=(slice(None), j))
+                         for j in range(n_per_batch)])
 
     # create buffers for trajectory fragments in the shared memory
     # (shared=True always makes a copy).
@@ -163,22 +166,13 @@ def rollout(
     # fetch for ready trajectory fragments and collate them into a batch
     try:
         while True:
-            # collate ready structured rollout fragments along batch dim=1
-            indices = [ctrl.ready.get(timeout=timeout)
-                       for _ in range(n_per_batch)]
+            for j in range(n_per_batch):
+                ix = ctrl.ready.get(timeout=timeout)
 
-            # we collate the buffers before releasing them
-            batch = [buffers[j] for j in indices]
+                suply(torch.Tensor.copy_, batch_slice[j],
+                      buffers[ix], non_blocking=True)  # XXX has fx if pinned
 
-            # XXX `.cat` along `dim > 0` is very slow on CPU, and much faster
-            #  on a GPU. However, the buffers can be quite large
-            batch = suply(torch.Tensor.to, batch, device=device,
-                          non_blocking=True)
-            batch = tuply(torch.cat, *batch, dim=1)
-
-            # repurpose buffers for later batches
-            for j in indices:
-                ctrl.empty.put(j)
+                ctrl.empty.put(ix)
 
             yield batch
 
