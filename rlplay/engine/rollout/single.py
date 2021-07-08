@@ -11,6 +11,8 @@ from copy import deepcopy
 from collections import namedtuple
 
 from ..base import prepare, startup, collect
+
+from ..utils.apply import suply
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.shared import Aliased, numpify, torchify
 
@@ -151,6 +153,10 @@ def rollout(
         |    ...      ...    |           |    ...      ...    |
 
     """
+    # always pin the runtime context if the device is 'cuda'
+    device = torch.device('cpu') if device is None else device
+    pinned = device.type == 'cuda'
+
     # get the correct multiprocessing context (torch-friendly)
     mp = get_context(start_method)
 
@@ -162,7 +168,7 @@ def rollout(
     shared = deepcopy(actor).cpu().share_memory()
 
     # a single one-element-batch forward pass through the copy
-    ref = prepare(env, shared, n_steps, n_envs, device=None)
+    batch = prepare(env, shared, n_steps, n_envs, pinned=pinned, device=device)
 
     # some environments don't like being closed or deleted, e.g. `nle`
     if close:
@@ -171,7 +177,7 @@ def rollout(
     # we use double buffered rollout, with both buffers in the shared memory
     # (shared=True always makes a copy).
     # XXX torch tensors have much simpler pickling/unpickling when sharing
-    double = torchify((ref,) * 2, shared=True)
+    double = torchify((batch,) * 2, shared=True)
 
     # the sync barrier and actor update lock
     ctrl = Control(mp.Lock(), mp.Barrier(2), mp.SimpleQueue())
@@ -196,7 +202,12 @@ def rollout(
             ctrl.barrier.wait()
 
             # yield the filled buffer and switch to the next one
-            yield double[flipflop]
+            suply(torch.Tensor.copy_, batch, double[flipflop])
+            if device.type == 'cuda':
+                batch = suply(torch.Tensor.to, batch, device=device,
+                              non_blocking=True)
+
+            yield batch
             flipflop = 1 - flipflop
 
     except BrokenBarrierError:
