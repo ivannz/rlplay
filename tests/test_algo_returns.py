@@ -5,11 +5,11 @@ import torch
 
 from collections import namedtuple
 
-from rlplay.utils.schema.shared import aliased
-from rlplay.engine.returns import pyt_gae, npy_gae
-from rlplay.engine.returns import pyt_deltas, npy_deltas
-from rlplay.engine.returns import pyt_returns, npy_returns
-from rlplay.engine.returns import pyt_vtrace, npy_vtrace
+from rlplay.engine.utils.shared import aliased
+from rlplay.algo.returns import pyt_gae, npy_gae
+from rlplay.algo.returns import pyt_deltas, npy_deltas
+from rlplay.algo.returns import pyt_returns, npy_returns
+from rlplay.algo.returns import pyt_vtrace, npy_vtrace
 
 RewardsData = namedtuple('RewardsData', [
     'rew', 'fin', 'val', 'bootstrap', 'omega'
