@@ -53,7 +53,6 @@ static const char *__doc__ = "\n"
 ">>>         return type(container)([apply(fn, v, **kwargs)\n"
 ">>>                                 for v in container])\n"
 ">>>\n"
-">>>     # `container` is not a is actually a leaf\n"
 ">>>     return fn(container, **kwargs)\n"
 "\n"
 ;
