@@ -14,15 +14,14 @@ from gym.vector.utils import batch_space
 
 from collections import namedtuple
 
-from .utils import CloudpickleSpawner
-
-from ..utils.schema import apply_single
-from ..utils.schema.shared import PickleShared
-from ..utils.schema.tools import getitem, setitem
-
 # from .schema.dtype import infer, check, rebuild
 # patch and register Dict and Tuple spaces as containers in abc
-from ..utils.integration import gym_spaces as _  # noqa: F401
+from .integration import gym_spaces as _  # noqa: F401
+
+from .schema import apply_single  # have to use pure pythonic apply
+from .schema.tools import getitem, setitem
+
+from ..engine.utils.multiprocessing import CloudpickleSpawner, PickleShared
 
 
 Endpoint = namedtuple('Endpoint', ['rx', 'tx'])
