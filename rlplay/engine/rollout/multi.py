@@ -19,7 +19,7 @@ Control = namedtuple('Control', ['reflock', 'empty', 'ready'])
 
 def p_stepper(
     rk, ws, ctrl, factory, buffers, shared,
-    sticky=False, close=True, device=None
+    sticky=False, close=True, affinity=None
 ):
     r"""Trajectory fragment collection subprocess.
 
@@ -37,6 +37,7 @@ def p_stepper(
 
     Closing queues also does not work as a shutdown indicator.
     """
+    device = affinity[rk] if affinity is not None else None
 
     # always pin the runtime context if the device is 'cuda'
     device = torch.device('cpu') if device is None else device
@@ -72,8 +73,7 @@ def p_stepper(
             # XXX `aliased` redundantly traverses `pyt` nested containers, but
             # `buffers` are allways torch tensors, so we just numpify them.
             if ix not in fragments:
-                fragments[ix] = Aliased(numpify(buffers[ix]),
-                                        buffers[ix])
+                fragments[ix] = Aliased(numpify(buffers[ix]), buffers[ix])
 
             # collect rollout with an up-to-date actor into the buffer
             collect(envs, actor, fragments[ix], ctx,
@@ -101,8 +101,16 @@ def rollout(
     n_buffers=16,
     n_per_batch=4,
     *, sticky=False, pinned=False, close=False, device=None,
-    start_method=None, timeout=10,
+    start_method=None, timeout=10, affinity=None
 ):
+    # the device to put the batches onto
+    device = torch.device('cpu') if device is None else device
+
+    # the device, on which to run the worker subprocess
+    if not isinstance(affinity, (tuple, list)):
+        affinity = (affinity,) * n_actors
+    assert len(affinity) == n_actors
+
     # get the correct multiprocessing context (torch-friendly)
     mp = get_context(start_method)
 
@@ -114,7 +122,7 @@ def rollout(
     shared = deepcopy(actor).cpu().share_memory()
 
     # a single one-element-batch forward pass through the copy
-    ref = prepare(env, shared, n_steps, n_per_actor, device=None)
+    ref = prepare(env, shared, n_steps, n_per_actor, pinned=False, device=None)
 
     # some environments don't like being closed or deleted, e.g. `nle`
     if close:
@@ -123,21 +131,18 @@ def rollout(
     # pre-allocate a buffer in the pinned memory for collated micro-batches
     #  (non-paged physical memory for faster host-device transfers)
     # XXX `torch.cat` with `out=None` always makes allocates a new tensor.
-    batch_buffer = torchify(
-        tuply(torch.cat, *(ref,) * n_per_batch, dim=1),  # batch dim!
-        pinned=pinned, shared=False)
+    # batch_buffer = torchify(
+    #     tuply(torch.cat, *(ref,) * n_per_batch, dim=1),  # batch dim!
+    #     pinned=pinned, shared=False)
+    # batch_buffer = suply(torch.Tensor.to, batch_buffer,
+    #                      device=device, non_blocking=True)
 
     # create buffers for trajectory fragments in the shared memory
     # (shared=True always makes a copy).
     # XXX torch tensors have much simpler pickling/unpickling when sharing
     buffers = torchify((ref,) * n_buffers, shared=True)
 
-    # we define a local function for moving data around
-    def collate_and_move(out, *tensors, _device=device):
-        """Concatenate tensors along dim=1 into `out` and move to device."""
-        # XXX `out` could be a pinned tensor from a special nested container
-        torch.cat(tensors, dim=1, out=out)
-        return out.to(_device, non_blocking=True)
+    del ref
 
     # setup buffer index queues, and create a state-dict update lock, which
     #  makes `actor ->> shared` updates atomic
@@ -152,7 +157,7 @@ def rollout(
         # collectors' device may be other than the main device
         join=False, args=(
             n_actors, ctrl, CloudpickleSpawner(factory), buffers, shared,
-            sticky, True, None
+            sticky, close, affinity
         ))
 
     # fetch for ready trajectory fragments and collate them into a batch
@@ -162,9 +167,14 @@ def rollout(
             indices = [ctrl.ready.get(timeout=timeout)
                        for _ in range(n_per_batch)]
 
-            # we collate the buffers before releasing the buffers
-            ready = (buffers[j] for j in indices)
-            batch = suply(collate_and_move, batch_buffer, *ready)
+            # we collate the buffers before releasing them
+            batch = [buffers[j] for j in indices]
+
+            # XXX `.cat` along `dim > 0` is very slow on CPU, and much faster
+            #  on a GPU. However, the buffers can be quite large
+            batch = suply(torch.Tensor.to, batch, device=device,
+                          non_blocking=True)
+            batch = tuply(torch.cat, *batch, dim=1)
 
             # repurpose buffers for later batches
             for j in indices:

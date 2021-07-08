@@ -86,7 +86,7 @@ def p_double(
 def rollout(
     factory, actor, n_steps, n_envs,
     *, sticky=False, close=False, device=None,
-    start_method=None
+    start_method=None, affinity=None
 ):
     r"""UPDATE THE DOC
 
@@ -153,9 +153,14 @@ def rollout(
         |    ...      ...    |           |    ...      ...    |
 
     """
-    # always pin the runtime context if the device is 'cuda'
+    # the device to put the batches onto
     device = torch.device('cpu') if device is None else device
-    pinned = device.type == 'cuda'
+
+    # the device, on which to run the worker subprocess
+    if isinstance(affinity, (tuple, list)):
+        affinity, *empty = affinity
+        assert not empty
+    affinity = torch.device('cpu') if affinity is None else affinity
 
     # get the correct multiprocessing context (torch-friendly)
     mp = get_context(start_method)
@@ -168,7 +173,7 @@ def rollout(
     shared = deepcopy(actor).cpu().share_memory()
 
     # a single one-element-batch forward pass through the copy
-    batch = prepare(env, shared, n_steps, n_envs, pinned=pinned, device=device)
+    batch = prepare(env, shared, n_steps, n_envs, pinned=False, device=None)
 
     # some environments don't like being closed or deleted, e.g. `nle`
     if close:
@@ -184,9 +189,14 @@ def rollout(
     p_worker = mp.Process(
         target=p_double, daemon=False,
         args=(ctrl, CloudpickleSpawner(factory), double, shared),
-        kwargs=dict(sticky=sticky, close=close, device=device),
+        kwargs=dict(sticky=sticky, close=close, device=affinity),
     )
     p_worker.start()
+
+    # now move the batch onto the proper device
+    if device.type == 'cuda':
+        batch = suply(torch.Tensor.to, batch, device=device,
+                      non_blocking=True)
 
     # the code flow in the loop below and in the `p_double` is designed to
     # synchronize `flipflop` between the worker and the parent.
@@ -203,9 +213,6 @@ def rollout(
 
             # yield the filled buffer and switch to the next one
             suply(torch.Tensor.copy_, batch, double[flipflop])
-            if device.type == 'cuda':
-                batch = suply(torch.Tensor.to, batch, device=device,
-                              non_blocking=True)
 
             yield batch
             flipflop = 1 - flipflop
