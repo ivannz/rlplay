@@ -4,10 +4,10 @@ import time
 import gym
 # import nle
 
+from rlplay.engine import BaseActorModule
 from rlplay.engine.rollout.multi import rollout
-from rlplay.engine.base import BaseActorModule
 
-from rlplay.engine.returns import npy_returns
+from rlplay.algo.returns import npy_returns
 from rlplay.utils.common import multinomial
 
 
@@ -121,7 +121,7 @@ if __name__ == '__main__':
 
     # initialize a sample environment and our learner model instance
     env = factory()
-    learner = Actor(env.observation_space, env.action_space)
+    learner = RandomActor(env.observation_space, env.action_space)
 
     learner.train()
     device_ = torch.device('cpu')  # torch.device('cuda:0')
@@ -180,7 +180,7 @@ if __name__ == '__main__':
 
     it.close()
 
-    print(batch, actions, hx, info, learner._counter)
+    # print(batch, actions, hx, info, learner._counter)
 
     exit(0)
 
