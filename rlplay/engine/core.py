@@ -557,13 +557,19 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     Let $s_t$ be the environment's state at time $t$ (inaccessible), and $x_t$,
     $r_t$ be the observation and the reward emitted by the env's transition to
     $
-        (s_{t-1}, a_{t-1}) \to (s_t, x_t, r_t, d_t)
+        (s_{t-1}, a_{t-1}) \to (s_t, x_t, r_t, d_t, E_t)
     $,
-    with $d_t$ indicating if $s_t$ is terminal. The action $a_t$ is taken at
-    in response to the current reward $r_t$ and observation $x_t$, the last
-    action $a_{t-1}$ and actor's current internal state $h_t$:
+    with $d_t$ indicating if $s_t$ is terminal and $E_t$ is the env's extra
+    info. The action $a_t$ is taken at in response to the current reward $r_t$
+    and observation $x_t$, the last action $a_{t-1}$ and actor's current
+    internal state $h_t$:
     $
-        (x_t, a_{t-1}, r_t, d_t, h_t) \to (a_t, h_{t+1})
+        (x_t, a_{t-1}, r_t, d_t, h_t) \to (a_t, h_{t+1}, A_{t+1})
+    $,
+    with $A_{t+1}$ being the actors's extra info computed on the history up to
+    and including $t$ and related to the composite `actor-env` transition
+    $
+        s_t \longrightarrow a_t \longrightarrow s_{t+1}
     $.
     Let $(s_*, x_*)$ be the true state and the observation just after a reset
     of an environment.
@@ -609,34 +615,38 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
     This data is collected by stepping through the actor and the environment in
     lockstep and recording it into the `fragment` rollout buffer and keeping
-    updated `context`. The `fragment.state`, a.k.a. `out`, with a terminal
-    observations at relative time $t+1$, contains the following data:
+    updated `context`. The simplified transitions
+    $
+        (s_t, a_t) \to s_{t+1}
+    $
+    determine the timing in the subscripts. The `fragment.state`, aka `out`,
+    with a terminal observation occurring at relative time $t+1$, contains
+    the following data:
 
     if `sticky` is False
 
-      +---+-----+-----------------------------------------+-------------+
-      |   |     |               .state                    | (env's      |
-      |   |  #  +-----------------------------------------+  state)     |
-      |   |     |  obs       act       rew       fin      |             |
-      +---+-----+-----------------------------------------+-------------+
-      |   |     |                                         |             |
-      | f |   0 |  x_0       a_{-1}    r_0       d_0      |  s_0        |
-      | r |     |      ...       ...         ...          |    ...      |
-      | a |   t |  x_t       a_{t-1}   r_t       \bot     |  s_t        |
-      | g |     |                                         |             |
-      | m | t+1 |  x'_*      a_t       r_{t+1}   \top     |  s'_*       |
-      | e |     |                                         |             |
-      | n | t+2 |  x'_{t+2}  a'_{t+1}  r'_{t+2}  \bot     |  s'_{t+1}   |
-      | t |     |      ...      ...        ...            |     ...     |
-      |   | N-1 |  x'_N      a'_{N-1}  r'_N      d'_N     |  s'_N       |
-      |   |     |                                         |             |
-      | p |   N |  x'_{N+1}  a'_N      r'_{N+1}  d'_{N+1} |  s'_{N+1} ------+
-      |   |     |                                         |             |   |
-      +---+-----+-----------------------------------------+-------------+ copy
-      | p |     |                                         |             |   |
-      | + |   0 |  x_0       a_{-1}    r_0       d_0      |  s_0      <<----+
-      | 1 |     |      ...      ...        ...            |             |
-      +---+-----+-----------------------------------------+-------------+
+      +---+-----+-----------------------------------------+-----------+
+      |   |     |               .state                    | (env's    |
+      |   |  #  +-----------------------------------------+  actual   |
+      |   |     |  obs       act       rew       fin      |   state)  |
+      +---+-----+-----------------------------------------+-----------+
+      | f |     |                                         |           |
+      | r |   0 |  x_k       a_{k-1}   r_k       d_k      |  s_k      |
+      | a | ... |                                         |           |
+      | g |   t |  x_t       a_{t-1}   r_t       \bot     |  s_t      |
+      | m | t+1 |  x'_*      a_t       r_{t+1}   \top     |  s'_*  <<-- reset
+      | e | t+2 |  x'_1      a'_0      r'_1      \bot     |  s'_1     |
+      | n | ... |                                         |           |
+      | t | N-1 |  x'_{j-1}  a'_{j-2}  r'_{j-1}  d'_{j-1} |  s'_{j-1} |
+      |   |   N |  x'_j      a'_{j-1}  r'_j      d'_j     |  s'_j   ------+
+      | p |     |                                         |           |   |
+      +---+-----+-----------------------------------------+-----------+ clone
+      |   |     |                                         |           |   |
+      | p |   0 |  x'_j      a'_{j-1}  r'_j      d'_j     |  s'_j  <<-----+
+      | + |   1 |  x'_{j+1}  a'_j      r'_{j+1}  d'_{j+1} |  s'_{j+1} |
+      | 1 | ... |                                         |           |
+      |   |     |                                         |           |
+      +---+-----+-----------------------------------------+-----------+
 
       (the apostrophe indicates a new trajectory within the same fragment)
 
@@ -664,31 +674,62 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     If `sticky` is True, then any interaction with the terminated environment
     is ceased until the start of the next fragment.
 
-      +---+-----+-----------------------------------------+-------------+
-      |   |     |               .state                    | (env's      |
-      |   |  #  +-----------------------------------------+  state)     |
-      |   |     |  obs       act       rew       fin      |             |
-      +---+-----+-----------------------------------------+-------------+
-      |   |     |                                         |             |
-      | f |   0 |  x_0       a_{-1}    r_0       d_0      |  s_0        |
-      | r |     |      ...       ...         ...          |     ...     |
-      | a |   t |  x_t       a_{t-1}   r_t       \bot     |  s_t        |
-      | g |     |                                         |             |
-      | m | t+1 |  x'_*      a_t       r_{t+1}   \top     |  s'_*       |
-      | e |     |                                         |             |
-      | n | t+2 |  x'_*      a_t       0         \top     |  s'_*       |
-      | t |     |      ...      ...        ...            |     ...     |
-      |   | N-1 |  x'_*      a_t       0         \top     |  s'_*       |
-      |   |     |                                         |             |
-      | p |   N |  x'_*      a_t       0         \top     |  s'_*     ------+
-      |   |     |                                         |             |   |
-      +---+-----+-----------------------------------------+-------------+ copy
-      | p |     |                                         |             |   |
-      | + |   0 |  x_0       a_{-1}    r_0       d_0      |  s_0      <<----+
-      | 1 |     |      ...      ...        ...            |             |
-      +---+-----+-----------------------------------------+-------------+
+      +---+-----+-----------------------------------------+-----------+
+      |   |     |               .state                    | (env's    |
+      |   |  #  +-----------------------------------------+  actual   |
+      |   |     |  obs       act       rew       fin      |   state)  |
+      +---+-----+-----------------------------------------+-----------+
+      | f |     |                                         |           |
+      | r |   0 |  x_k       a_{k-1}   r_k       d_k      |  s_k      |
+      | a |    ...                                       ...          |
+      | g |   t |  x_t       a_{t-1}   r_t       \bot     |  s_t      |
+      | m | t+1 |  x'_*      a_t       r_{t+1}   \top     |  s'_*  <<-- reset
+      | e | t+2 |  x'_*      a_t       0         \top     |  s'_*     |
+      | n |    ...                                       ...          |
+      | t | N-1 |  x'_*      a_t       0         \top     |  s'_*     |
+      |   |   N |  x'_*      a_t       0         \top     |  s'_*  -------+
+      | p |     |                                         |           |   |
+      +---+-----+-----------------------------------------+-----------+ clone
+      |   |     |                                         |           |   |
+      | p |   0 |  x'_0      a_{-1}    r_0       \top     |  s_0  <<------+
+      | + |   1 |  x'_1      a_0       r_1       d_1      |  s_1      |
+      | 1 |    ...                                       ...          |
+      |   |     |                                         |           |
+      +---+-----+-----------------------------------------+-----------+
 
-    This option is more friendly towards CUDNN and torch's packed sequences.
+    This option is more friendly towards CUDNN and torch's packed sequences,
+    but it iseems that manuall stepping through time is more efficient.
+
+    Below we depict the synchronisation of the records in the rollout fragment.
+    The horizonal arrows indicate the sub-steps of the composite `actor-env`
+    transition.
+
+      +---+-----+---------------------------------------+-----------+
+      |   |  #  |  .state   .hx  ->  .actor -> .env     | actual    |
+      +---+-----+---------------------------------------+-----------+
+      | f |     |                                       |           |
+      | r |   0 |  Z_k      h_k      A_{k+1}   E_{k+1}  |  s_{k+1}  |
+      | a |    ...                                     ...          |
+      | g |   t |  Z_t      h_t      A_{t+1}   E_{t+1}  |  s'_*   <<-- reset
+      | m | t+1 |  Z'_0     h'_*     A'_1      E'_1     |  s'_1     |
+      | e | t+2 |  Z'_1     h'_1     A'_2      E'_2     |  s'_2     |
+      | n |    ...                                     ...          |
+      | t | N-1 |  Z'_{j-1} h'_{j-1} A'_j      E'_j     |  s'_j     |
+      |   |   N |  Z'_j     h'_j                        |           |
+      | p |     |   |        |                          |           |
+      +---+-----+---|--------|--------------------------+-----------+
+      |   |     |   V        V                          |           |
+      | p |   0 |  Z'_j     h'_j     A'_{j+1}  E'_{j+1} |  s'_{j+1} |
+      | + |   1 |  Z'_{j+1} h'_{j+1} A'_{j+2}  E'_{j+2} |  s'_{j+2} |
+      | 1 |    ...                                     ...          |
+      |   |     |                                       |           |
+      +---+-----+---------------------------------------+-----------+
+
+    (the evolution of `.hx` is not recorded, only its initial value $h_k$)
+
+    To summarize
+      * `.state[t]` -->> `.state[t+1].act` and `.actor[t]`
+      * `.state[t], .state[t+1].act` -->> `.env[t]` and rest of `.state[t+1]`
     """
 
     # write the initial recurrent state of the actor to the shared buffer
