@@ -186,6 +186,13 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
     if(PyTuple_CheckExact(main))
         return output;
 
+    // Preserve namedtuple, devolve others to builtin tuples
+    // "isinstance(o, tuple) and hasattr(o, '_fields')" is the corect way.
+    //   https://mail.python.org/pipermail//python-ideas/2014-January/024886.html
+    //   https://bugs.python.org/issue7796
+    if(!PyObject_HasAttrString(main, "_fields"))
+        return output;
+
     PyObject *namedtuple = Py_TYPE(main)->tp_new(Py_TYPE(main), output, NULL);
     Py_DECREF(output);
 
