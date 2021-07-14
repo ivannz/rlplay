@@ -6,59 +6,59 @@ typedef std::vector<PyObject *> objectstack;
 
 
 static const char *__doc__ = "\n"
-"apply(callable, *objects, _safe=True, _star=True, **kwargs)\n"
-"\n"
-"Compute the function using the leaf data of the nested objects as arguments.\n"
-"\n"
-"A `nested object` is either a python object (object, str, numpy array, torch\n"
-"tensor, etc.) or a subclass of one of python's builtin containers (dict,\n"
-"list, or tuple), that consists of other nested objects.\n"
-"\n"
-"Parameters\n"
-"----------\n"
-"callable : callable\n"
-"    A callable object to be applied to the leaf data.\n"
-"\n"
-"*objects : nested objects\n"
-"    All remaining positionals to `apply` are assumed to be nested objects,\n"
-"    that supply arguments for the callable from their leaf data.\n"
-"\n"
-"_safe : bool, default=True\n"
-"    Disables structural safety checks when more than one nested object has\n"
-"    been supplied.\n"
-"    SEGFAULTs if the nested objects do not have IDENTICAL STRUCTURE.\n"
-"\n"
-"_star : bool, default=True\n"
-"    Determines how to pass the leaf data to the callable.\n"
-"    If `True` (star-apply), then we call\n"
-"        `callable(d_1, d_2, ..., d_n, **kwargs)`,\n"
-"\n"
-"    otherwise packages the leaf data into a tuple (tuple-apply) and calls\n"
-"        `callable((d_1, d_2, ..., d_n), **kwargs)`\n"
-"\n"
-"    even for `n=1`.\n"
-"\n"
-"Returns\n"
-"-------\n"
-"result : a new nested object\n"
-"    The nested object that contains the values returned by `callable`.\n"
-"    Guaranteed to have IDENTICAL structure as the first nested object\n"
-"    in objects.\n"
-"\n"
-"Details\n"
-"-------\n"
-"For a single container `apply` with `_star=True` is roughly equivalent to\n"
-">>> def apply(fn, container, **kwargs):\n"
-">>>     if isinstance(container, dict):\n"
-">>>         return {k: apply(fn, v, **kwargs)\n"
-">>>                 for k, v in container.items()}\n"
-">>>\n"
-">>>     if isinstance(container, (tuple, list)):\n"
-">>>         return type(container)([apply(fn, v, **kwargs)\n"
-">>>                                 for v in container])\n"
-">>>\n"
-">>>     return fn(container, **kwargs)\n"
-"\n"
+    "apply(callable, *objects, _safe=True, _star=True, **kwargs)\n"
+    "\n"
+    "Compute the function using the leaf data of the nested objects as arguments.\n"
+    "\n"
+    "A `nested object` is either a python object (object, str, numpy array, torch\n"
+    "tensor, etc.) or a subclass of one of python's builtin containers (dict,\n"
+    "list, or tuple), that consists of other nested objects.\n"
+    "\n"
+    "Parameters\n"
+    "----------\n"
+    "callable : callable\n"
+    "    A callable object to be applied to the leaf data.\n"
+    "\n"
+    "*objects : nested objects\n"
+    "    All remaining positionals to `apply` are assumed to be nested objects,\n"
+    "    that supply arguments for the callable from their leaf data.\n"
+    "\n"
+    "_safe : bool, default=True\n"
+    "    Disables structural safety checks when more than one nested object has\n"
+    "    been supplied.\n"
+    "    SEGFAULTs if the nested objects do not have IDENTICAL STRUCTURE.\n"
+    "\n"
+    "_star : bool, default=True\n"
+    "    Determines how to pass the leaf data to the callable.\n"
+    "    If `True` (star-apply), then we call\n"
+    "        `callable(d_1, d_2, ..., d_n, **kwargs)`,\n"
+    "\n"
+    "    otherwise packages the leaf data into a tuple (tuple-apply) and calls\n"
+    "        `callable((d_1, d_2, ..., d_n), **kwargs)`\n"
+    "\n"
+    "    even for `n=1`.\n"
+    "\n"
+    "Returns\n"
+    "-------\n"
+    "result : a new nested object\n"
+    "    The nested object that contains the values returned by `callable`.\n"
+    "    Guaranteed to have IDENTICAL structure as the first nested object\n"
+    "    in objects.\n"
+    "\n"
+    "Details\n"
+    "-------\n"
+    "For a single container `apply` with `_star=True` is roughly equivalent to\n"
+    ">>> def apply(fn, container, **kwargs):\n"
+    ">>>     if isinstance(container, dict):\n"
+    ">>>         return {k: apply(fn, v, **kwargs)\n"
+    ">>>                 for k, v in container.items()}\n"
+    ">>>\n"
+    ">>>     if isinstance(container, (tuple, list)):\n"
+    ">>>         return type(container)([apply(fn, v, **kwargs)\n"
+    ">>>                                 for v in container])\n"
+    ">>>\n"
+    ">>>     return fn(container, **kwargs)\n"
+    "\n"
 ;
 
 
@@ -660,15 +660,14 @@ static PyObject* PyList_fromVector(objectstack &stack)
 
 int _validate(PyObject *main, PyObject *rest, objectstack &stack)
 {
+    int result;
+
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     if (len == 0)
         return 1;
 
     PyObject *key, *rest_ = PyTuple_New(len);
     if(rest_ == NULL)
-        return 0;
-
-    if(Py_EnterRecursiveCall(""))
         return 0;
 
     PyObject *main_, *item_;
@@ -689,7 +688,11 @@ int _validate(PyObject *main, PyObject *rest, objectstack &stack)
                 PyTuple_SET_ITEM(rest_, j, item_);
             }
 
-            if(!_validate(main_, rest_, stack)) {
+            if(Py_EnterRecursiveCall("")) return 0;
+            result = _validate(main_, rest_, stack);
+            Py_LeaveRecursiveCall();
+
+            if(!result) {
                 Py_DECREF(rest_);
                 return 0;
             }
@@ -714,7 +717,11 @@ int _validate(PyObject *main, PyObject *rest, objectstack &stack)
                 PyTuple_SET_ITEM(rest_, j, item_);
             }
 
-            if(!_validate(main_, rest_, stack)) {
+            if(Py_EnterRecursiveCall("")) return 0;
+            result = _validate(main_, rest_, stack);
+            Py_LeaveRecursiveCall();
+
+            if(!result) {
                 Py_DECREF(rest_);
                 return 0;
             }
@@ -739,7 +746,11 @@ int _validate(PyObject *main, PyObject *rest, objectstack &stack)
                 PyTuple_SET_ITEM(rest_, j, item_);
             }
 
-            if(!_validate(main_, rest_, stack)) {
+            if(Py_EnterRecursiveCall("")) return 0;
+            result = _validate(main_, rest_, stack);
+            Py_LeaveRecursiveCall();
+
+            if(!result) {
                 Py_DECREF(rest_);
                 return 0;
             }
@@ -749,8 +760,6 @@ int _validate(PyObject *main, PyObject *rest, objectstack &stack)
         }
 
     }
-
-    Py_LeaveRecursiveCall();
 
     // decrefing a tuple also decrefs all its items
     Py_DECREF(rest_);
