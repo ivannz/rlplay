@@ -1,5 +1,9 @@
 #include <Python.h>
+#include <vector>
 // https://edcjones.tripod.com/refcount.html
+
+typedef std::vector<PyObject *> objectstack;
+
 
 static const char *__doc__ = "\n"
 "apply(callable, *objects, _safe=True, _star=True, **kwargs)\n"
@@ -57,49 +61,76 @@ static const char *__doc__ = "\n"
 "\n"
 ;
 
+
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                         bool const safe, bool const star, PyObject *kwargs);
 
-int _validate_dict(PyObject *main, PyObject *rest)
-{
-    Py_ssize_t len = PyDict_Size(main);
 
+int _validate_dict(PyObject *main, PyObject *rest, objectstack *stack=NULL)
+{
+    Py_ssize_t numel = PyDict_Size(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
-        PyObject *obj = PyTuple_GET_ITEM(rest, j);
+        if(stack != NULL)
+            stack->push_back(PyLong_FromSsize_t(j+1));
+
+        PyObject *key, *value, *obj = PyTuple_GET_ITEM(rest, j);
 
         if(!PyDict_Check(obj)) {
+            if(stack != NULL)
+                stack->push_back(Py_BuildValue("s", Py_TYPE(obj)->tp_name));
+
             PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
             return 0;
         }
 
-        if(len != PyDict_Size(obj)) {
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(main, &pos, &key, &value)) {
+            if(!PyDict_Contains(obj, key)) {
+                if(stack != NULL) {
+                    Py_INCREF(key);
+                    stack->push_back(key);
+                }
+
+                PyErr_SetObject(PyExc_KeyError, key);
+                return 0;
+            }
+        }
+
+        if(numel != PyDict_Size(obj)) {
+            if(stack != NULL)
+                stack->push_back(Py_BuildValue("s", "dict size mismatch"));
+
             PyErr_SetString(PyExc_RuntimeError, "dict size mismatch");
             return 0;
         }
 
-        PyObject *key, *value;
-        Py_ssize_t pos = 0;
-        while (PyDict_Next(main, &pos, &key, &value)) {
-            if(!PyDict_Contains(obj, key)) {
-                PyErr_SetObject(PyExc_KeyError, key);
-                return 0;
-            }
+        if(stack != NULL) {
+            Py_DECREF(stack->back());
+            stack->pop_back();
         }
     }
 
     return 1;
 }
 
+
 static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
                              bool const safe, bool const star, PyObject *kwargs)
 {
-    PyObject *output = PyDict_New(), *result = NULL;
-    if(output == NULL) return NULL;
-
-    Py_ssize_t j, p = 0, len = PyTuple_GET_SIZE(rest);
+    Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *key, *main_, *item_, *rest_ = PyTuple_New(len);
-    while (PyDict_Next(main, &p, &key, &main_)) {
-        for(j = 0; j < len; j++) {
+    if(rest_ == NULL)
+        return NULL;
+
+    PyObject *output = PyDict_New(), *result = NULL;
+    if(output == NULL) {
+        Py_DECREF(rest_);
+        return NULL;
+    }
+
+    Py_ssize_t pos = 0;
+    while (PyDict_Next(main, &pos, &key, &main_)) {
+        for(Py_ssize_t j = 0; j < len; j++) {
             item_ = PyDict_GetItem(PyTuple_GET_ITEM(rest, j), key);
 
             // a tuple assumes ownership of, or 'steals', the reference, owned
@@ -132,40 +163,61 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
     return output;
 }
 
-int _validate_tuple(PyObject *main, PyObject *rest)
-{
-    Py_ssize_t len = PyTuple_GET_SIZE(main);
 
+int _validate_tuple(PyObject *main, PyObject *rest, objectstack *stack=NULL)
+{
+    Py_ssize_t numel = PyTuple_GET_SIZE(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
+        if(stack != NULL)
+            stack->push_back(PyLong_FromSsize_t(j+1));
+
         PyObject *obj = PyTuple_GET_ITEM(rest, j);
 
         if(!PyTuple_Check(obj)) {
+            if(stack != NULL)
+                stack->push_back(Py_BuildValue("s", Py_TYPE(obj)->tp_name));
+
             PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
             return 0;
         }
 
-        if(len != PyTuple_GET_SIZE(obj)) {
+        if(numel != PyTuple_GET_SIZE(obj)) {
+            if(stack != NULL)
+                stack->push_back(Py_BuildValue("s", "tuple length mismatch"));
+
             PyErr_SetString(PyExc_RuntimeError, "tuple length mismatch");
             return 0;
+        }
+
+        if(stack != NULL) {
+            Py_DECREF(stack->back());
+            stack->pop_back();
         }
     }
 
     return 1;
 }
 
+
 static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest,
                               bool const safe, bool const star, PyObject *kwargs)
 {
+    Py_ssize_t len = PyTuple_GET_SIZE(rest);
+    PyObject *main_, *item_, *rest_ = PyTuple_New(len);
+    if(rest_ == NULL)
+        return NULL;
+
     Py_ssize_t numel = PyTuple_GET_SIZE(main);
     PyObject *output = PyTuple_New(numel), *result = NULL;
-    if(output == NULL) return NULL;
+    if(output == NULL) {
+        Py_DECREF(rest_);
+        return NULL;
+    }
 
-    Py_ssize_t j, p, len = PyTuple_GET_SIZE(rest);
-    PyObject *main_, *item_,  *rest_ = PyTuple_New(len);
-    for(p = 0; p < numel; p++) {
-        main_ = PyTuple_GET_ITEM(main, p);
-        for(j = 0; j < len; j++) {
-            item_ = PyTuple_GET_ITEM(PyTuple_GET_ITEM(rest, j), p);
+    for(Py_ssize_t pos = 0; pos < numel; pos++) {
+        main_ = PyTuple_GET_ITEM(main, pos);
+        for(Py_ssize_t j = 0; j < len; j++) {
+            item_ = PyTuple_GET_ITEM(PyTuple_GET_ITEM(rest, j), pos);
 
             Py_INCREF(item_);
             PyTuple_SET_ITEM(rest_, j, item_);
@@ -178,7 +230,7 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
             return NULL;
         }
 
-        PyTuple_SET_ITEM(output, p, result);
+        PyTuple_SET_ITEM(output, pos, result);
     }
 
     Py_DECREF(rest_);
@@ -199,40 +251,61 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
     return namedtuple;
 }
 
-int _validate_list(PyObject *main, PyObject *rest)
-{
-    Py_ssize_t len = PyList_GET_SIZE(main);
 
+int _validate_list(PyObject *main, PyObject *rest, objectstack *stack=NULL)
+{
+    Py_ssize_t numel = PyList_GET_SIZE(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
+        if(stack != NULL)
+            stack->push_back(PyLong_FromSsize_t(j+1));
+
         PyObject *obj = PyTuple_GET_ITEM(rest, j);
 
         if(!PyList_Check(obj)) {
+            if(stack != NULL)
+                stack->push_back(Py_BuildValue("s", Py_TYPE(obj)->tp_name));
+
             PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
             return 0;
         }
 
-        if(len != PyList_GET_SIZE(obj)) {
+        if(numel != PyList_GET_SIZE(obj)) {
+            if(stack != NULL)
+                stack->push_back(Py_BuildValue("s", "list length mismatch"));
+
             PyErr_SetString(PyExc_RuntimeError, "list length mismatch");
             return 0;
+        }
+
+        if(stack != NULL) {
+            Py_DECREF(stack->back());
+            stack->pop_back();
         }
     }
 
     return 1;
 }
 
+
 static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
                              bool const safe, bool const star, PyObject *kwargs)
 {
+    Py_ssize_t len = PyTuple_GET_SIZE(rest);
+    PyObject *main_, *item_, *rest_ = PyTuple_New(len);
+    if(rest_ == NULL)
+        return NULL;
+
     Py_ssize_t numel = PyList_GET_SIZE(main);
     PyObject *output = PyList_New(numel), *result = NULL;
-    if(output == NULL) return NULL;
+    if(output == NULL) {
+        Py_DECREF(rest_);
+        return NULL;
+    }
 
-    Py_ssize_t j, p, len = PyTuple_GET_SIZE(rest);
-    PyObject *main_, *item_,  *rest_ = PyTuple_New(len);
-    for(p = 0; p < numel; p++) {
-        main_ = PyList_GET_ITEM(main, p);
-        for(j = 0; j < len; j++) {
-            item_ = PyList_GET_ITEM(PyTuple_GET_ITEM(rest, j), p);
+    for(Py_ssize_t pos = 0; pos < numel; pos++) {
+        main_ = PyList_GET_ITEM(main, pos);
+        for(Py_ssize_t j = 0; j < len; j++) {
+            item_ = PyList_GET_ITEM(PyTuple_GET_ITEM(rest, j), pos);
 
             Py_INCREF(item_);
             PyTuple_SET_ITEM(rest_, j, item_);
@@ -245,13 +318,14 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
             return NULL;
         }
 
-        PyList_SET_ITEM(output, p, result);
+        PyList_SET_ITEM(output, pos, result);
     }
 
     Py_DECREF(rest_);
 
     return output;
 }
+
 
 static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *rest,
                                 bool const safe, bool const star, PyObject *kwargs)
@@ -260,23 +334,33 @@ static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *re
     // it is impossible to know the type of keys of a mapping at runtime,
     //  hence lists, tuples, dicts and any objects with `__getitem__` are
     //  mappings according to `PyMapping_Check`.
-    PyObject *output = PyDict_New(), *result = Py_None;
-    if(output == NULL) return NULL;
-    Py_INCREF(result);
-
-    Py_ssize_t j, p, len = PyTuple_GET_SIZE(rest);
+    Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *key, *main_, *item_, *rest_ = PyTuple_New(len);
+    if(rest_ == NULL)
+        return NULL;
+
+    PyObject *output = PyDict_New(), *result = Py_None;
+    if(output == NULL) {
+        Py_DECREF(rest_);
+        return NULL;
+    }
 
     PyObject *items = PyMapping_Items(main);
-    if(items == NULL) return NULL;
+    if(items == NULL) {
+        Py_DECREF(rest_);
+        Py_DECREF(output);
+        return NULL;
+    }
+
+    Py_INCREF(result);
 
     Py_ssize_t numel = PyList_GET_SIZE(items);
-    for(p = 0; p < numel; p++) {
-        item_ = PyList_GET_ITEM(items, p);
+    for(Py_ssize_t pos = 0; pos < numel; pos++) {
+        item_ = PyList_GET_ITEM(items, pos);
         key = PyTuple_GET_ITEM(item_, 0);
         main_ = PyTuple_GET_ITEM(item_, 1);
 
-        for(j = 0; j < len; j++) {
+        for(Py_ssize_t j = 0; j < len; j++) {
             item_ = PyObject_GetItem(PyTuple_GET_ITEM(rest, j), key);
             PyTuple_SET_ITEM(rest_, j, item_);
         }
@@ -297,6 +381,7 @@ static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *re
 
     return output;
 }
+
 
 static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
                              bool const star, PyObject *kwargs)
@@ -330,6 +415,7 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
 
     return output;
 }
+
 
 static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                         bool const safe, bool const star, PyObject *kwargs)
@@ -392,6 +478,7 @@ int parse_apply_args(PyObject *args, PyObject **callable, PyObject **main, PyObj
     return 1;
 }
 
+
 static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     // from the url at the top: {API 1.2.1} the call mechanism guarantees
@@ -438,6 +525,7 @@ static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
     return result;
 }
 
+
 // apply functions with preset _safe and _star kwargs
 // [ts][u_]apply -- t/s tuple or star args, u/_ unsafe or safe
 static PyObject* suply(PyObject *self, PyObject *args, PyObject *kwargs)
@@ -452,6 +540,7 @@ static PyObject* suply(PyObject *self, PyObject *args, PyObject *kwargs)
     return result;
 }
 
+
 static PyObject* tuply(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     PyObject *callable = NULL, *main = NULL, *rest = NULL;
@@ -463,6 +552,7 @@ static PyObject* tuply(PyObject *self, PyObject *args, PyObject *kwargs)
 
     return result;
 }
+
 
 static PyObject* s_ply(PyObject *self, PyObject *args, PyObject *kwargs)
 {
@@ -476,6 +566,7 @@ static PyObject* s_ply(PyObject *self, PyObject *args, PyObject *kwargs)
     return result;
 }
 
+
 static PyObject* t_ply(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     PyObject *callable = NULL, *main = NULL, *rest = NULL;
@@ -487,6 +578,7 @@ static PyObject* t_ply(PyObject *self, PyObject *args, PyObject *kwargs)
 
     return result;
 }
+
 
 static PyObject* getitem(PyObject *self, PyObject *args, PyObject *kwargs)
 {
@@ -500,6 +592,7 @@ static PyObject* getitem(PyObject *self, PyObject *args, PyObject *kwargs)
 
     return PyObject_GetItem(object, index);
 }
+
 
 static PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
 {
@@ -517,6 +610,7 @@ static PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
     Py_RETURN_NONE;
 }
 
+
 static PyObject* is_sequence(PyObject *self, PyObject *object)
 {
     if(PySequence_Check(object)) {
@@ -528,6 +622,7 @@ static PyObject* is_sequence(PyObject *self, PyObject *object)
     }
 }
 
+
 static PyObject* is_mapping(PyObject *self, PyObject *object)
 {
     if(PyMapping_Check(object)) {
@@ -538,6 +633,164 @@ static PyObject* is_mapping(PyObject *self, PyObject *object)
 
     }
 }
+
+
+static PyObject* PyList_fromVector(objectstack &stack)
+{
+    // steals references from the std::vector
+    PyObject *list = PyList_New(stack.size());
+    if(list == NULL)
+        return NULL;
+
+    for(Py_ssize_t j = 0; j < stack.size(); ++j) {
+        PyObject *item = stack[j];
+        if(item == NULL) {
+            Py_DECREF(list);
+            return NULL;
+        }
+
+        PyList_SET_ITEM(list, j, item);
+    }
+
+    stack.clear();
+
+    return list;
+}
+
+
+int _validate(PyObject *main, PyObject *rest, objectstack &stack)
+{
+    Py_ssize_t len = PyTuple_GET_SIZE(rest);
+    if (len == 0)
+        return 1;
+
+    PyObject *key, *rest_ = PyTuple_New(len);
+    if(rest_ == NULL)
+        return 0;
+
+    if(Py_EnterRecursiveCall(""))
+        return 0;
+
+    PyObject *main_, *item_;
+    if(PyDict_Check(main)) {
+        if(!_validate_dict(main, rest, &stack))
+            return 0;
+
+        // for each key in the main dict
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(main, &pos, &key, &main_)) {
+            Py_INCREF(key);
+            stack.push_back(key);
+
+            for(Py_ssize_t j = 0; j < len; j++) {
+                item_ = PyDict_GetItem(PyTuple_GET_ITEM(rest, j), key);
+
+                Py_INCREF(item_);
+                PyTuple_SET_ITEM(rest_, j, item_);
+            }
+
+            if(!_validate(main_, rest_, stack)) {
+                Py_DECREF(rest_);
+                return 0;
+            }
+
+            stack.pop_back();
+            Py_DECREF(key);
+        }
+
+    } else if(PyTuple_Check(main)) {
+        if(!_validate_tuple(main, rest, &stack))
+            return 0;
+
+        for(Py_ssize_t pos = 0; pos < PyTuple_GET_SIZE(main); pos++) {
+            key = PyLong_FromSsize_t(pos);
+            stack.push_back(key);
+
+            main_ = PyTuple_GET_ITEM(main, pos);
+            for(Py_ssize_t j = 0; j < len; j++) {
+                item_ = PyTuple_GET_ITEM(PyTuple_GET_ITEM(rest, j), pos);
+
+                Py_INCREF(item_);
+                PyTuple_SET_ITEM(rest_, j, item_);
+            }
+
+            if(!_validate(main_, rest_, stack)) {
+                Py_DECREF(rest_);
+                return 0;
+            }
+
+            stack.pop_back();
+            Py_DECREF(key);
+        }
+
+    } else if(PyList_Check(main)) {
+        if(!_validate_list(main, rest, &stack))
+            return 0;
+
+        for(Py_ssize_t pos = 0; pos < PyList_GET_SIZE(main); pos++) {
+            key = PyLong_FromSsize_t(pos);
+            stack.push_back(key);
+
+            main_ = PyList_GET_ITEM(main, pos);
+            for(Py_ssize_t j = 0; j < len; j++) {
+                item_ = PyList_GET_ITEM(PyTuple_GET_ITEM(rest, j), pos);
+
+                Py_INCREF(item_);
+                PyTuple_SET_ITEM(rest_, j, item_);
+            }
+
+            if(!_validate(main_, rest_, stack)) {
+                Py_DECREF(rest_);
+                return 0;
+            }
+
+            stack.pop_back();
+            Py_DECREF(key);
+        }
+
+    }
+
+    Py_LeaveRecursiveCall();
+
+    // decrefing a tuple also decrefs all its items
+    Py_DECREF(rest_);
+
+    return 1;
+}
+
+
+static PyObject* validate(PyObject *self, PyObject *args)
+{
+    Py_ssize_t len = PyTuple_GET_SIZE(args);
+    if(len == 1)
+        return PyList_New(0);
+
+    PyObject *main = NULL;
+
+    PyObject *first = PyTuple_GetSlice(args, 0, 1);
+    int parsed = PyArg_ParseTuple(first, "O|:validate", &main);
+    Py_DECREF(first);
+
+    if (!parsed)
+        return NULL;
+
+    PyObject *rest = PyTuple_GetSlice(args, 1, len);
+    if (rest == NULL)
+        return NULL;
+
+    // the vector is ajust a temporary proxy for a list, and thus steals references
+    std::vector<PyObject *> stack = {};
+
+    // dfs through the structures: updates stack and set exceptions in case of an emergency
+    _validate(main, rest, stack);
+
+    Py_DECREF(rest);
+
+    PyErr_Clear();
+
+    return PyList_fromVector(stack);
+}
+
 
 static PyMethodDef modapply_methods[] = {
     {
@@ -585,6 +838,11 @@ static PyMethodDef modapply_methods[] = {
         (PyCFunction) is_mapping,
         METH_O,
         NULL,
+    }, {
+        "validate",
+        (PyCFunction) validate,
+        METH_VARARGS,
+        "validate(*objects) validates the structure of the nested objects",
     }, {
         NULL,
         NULL,
