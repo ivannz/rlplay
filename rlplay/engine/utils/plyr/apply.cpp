@@ -1,10 +1,12 @@
 #include <Python.h>
+
+#include <apply.h>
 #include <validate.h>
 // https://edcjones.tripod.com/refcount.html
 // https://pythonextensionpatterns.readthedocs.io/en/latest/refcount.html
 
 
-static const char *__doc__ = "\n"
+const char *__doc__ = "\n"
     "apply(callable, *objects, _safe=True, _star=True, **kwargs)\n"
     "\n"
     "Compute the function using the leaf data of the nested objects as arguments.\n"
@@ -61,7 +63,7 @@ static const char *__doc__ = "\n"
 ;
 
 
-static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
+PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                         bool const safe, bool const star, PyObject *kwargs);
 
 
@@ -334,8 +336,8 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
 }
 
 
-static PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
-                        bool const safe, bool const star, PyObject *kwargs)
+PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
+                 bool const safe, bool const star, PyObject *kwargs)
 {
     PyObject *result;
 
@@ -396,7 +398,7 @@ int parse_apply_args(PyObject *args, PyObject **callable, PyObject **main, PyObj
 }
 
 
-static PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
+PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     // from the url at the top: {API 1.2.1} the call mechanism guarantees
     //  to hold a reference to every argument for the duration of the call.

@@ -1,7 +1,7 @@
 #include <Python.h>
 
 
-static PyObject* getitem(PyObject *self, PyObject *args, PyObject *kwargs)
+PyObject* getitem(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     static char *kwlist[] = {"", "index", NULL};
 
@@ -15,7 +15,7 @@ static PyObject* getitem(PyObject *self, PyObject *args, PyObject *kwargs)
 }
 
 
-static PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
+PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     static char *kwlist[] = {"", "", "index", NULL};
 
@@ -32,7 +32,7 @@ static PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
 }
 
 
-static PyObject* is_sequence(PyObject *self, PyObject *object)
+PyObject* is_sequence(PyObject *self, PyObject *object)
 {
     if(PySequence_Check(object)) {
         Py_RETURN_TRUE;
@@ -44,7 +44,7 @@ static PyObject* is_sequence(PyObject *self, PyObject *object)
 }
 
 
-static PyObject* is_mapping(PyObject *self, PyObject *object)
+PyObject* is_mapping(PyObject *self, PyObject *object)
 {
     if(PyMapping_Check(object)) {
         Py_RETURN_TRUE;

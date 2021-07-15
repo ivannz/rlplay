@@ -1,12 +1,8 @@
 #include <Python.h>
-#include <vector>
-// https://edcjones.tripod.com/refcount.html
-// https://pythonextensionpatterns.readthedocs.io/en/latest/refcount.html
-
-typedef std::vector<PyObject *> objectstack;
+#include <validate.h>
 
 
-int _validate_dict(PyObject *main, PyObject *rest, objectstack *stack=NULL)
+int _validate_dict(PyObject *main, PyObject *rest, objectstack *stack)
 {
     Py_ssize_t numel = PyDict_Size(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
@@ -54,7 +50,7 @@ int _validate_dict(PyObject *main, PyObject *rest, objectstack *stack=NULL)
 }
 
 
-int _validate_tuple(PyObject *main, PyObject *rest, objectstack *stack=NULL)
+int _validate_tuple(PyObject *main, PyObject *rest, objectstack *stack)
 {
     Py_ssize_t numel = PyTuple_GET_SIZE(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
@@ -89,7 +85,7 @@ int _validate_tuple(PyObject *main, PyObject *rest, objectstack *stack=NULL)
 }
 
 
-int _validate_list(PyObject *main, PyObject *rest, objectstack *stack=NULL)
+int _validate_list(PyObject *main, PyObject *rest, objectstack *stack)
 {
     Py_ssize_t numel = PyList_GET_SIZE(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
@@ -258,7 +254,7 @@ int _validate(PyObject *main, PyObject *rest, objectstack &stack)
 }
 
 
-static PyObject* validate(PyObject *self, PyObject *args)
+PyObject* validate(PyObject *self, PyObject *args)
 {
     Py_ssize_t len = PyTuple_GET_SIZE(args);
     if(len == 1)
