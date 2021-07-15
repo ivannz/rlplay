@@ -1,6 +1,7 @@
 #include <Python.h>
 #include <vector>
 // https://edcjones.tripod.com/refcount.html
+// https://pythonextensionpatterns.readthedocs.io/en/latest/refcount.html
 
 typedef std::vector<PyObject *> objectstack;
 
@@ -129,9 +130,18 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
     }
 
     Py_ssize_t pos = 0;
+    // Any references returned by `PyDict_Next` are borrowed from the dict
+    //     https://docs.python.org/3/c-api/dict.html#c.PyDict_Next
     while (PyDict_Next(main, &pos, &key, &main_)) {
         for(Py_ssize_t j = 0; j < len; j++) {
+            // `PyDict_GetItem` returns a borrowed reference
+            //     https://docs.python.org/3/c-api/dict.html#c.PyDict_GetItem
             item_ = PyDict_GetItem(PyTuple_GET_ITEM(rest, j), key);
+
+            // Unlike `PyTuple_SetItem`, `PyTuple_SET_ITEM` does not discard
+            //  references to items being replaced!
+            //    https://docs.python.org/3/c-api/tuple.html#c.PyTuple_SetItem
+            Py_XDECREF(PyTuple_GET_ITEM(rest_, j));
 
             // a tuple assumes ownership of, or 'steals', the reference, owned
             // by a dict from `rest`, so we incref it for protection. It also
@@ -145,12 +155,16 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
         result = _apply(callable, main_, rest_, safe, star, kwargs);
         if(result == NULL) {
             Py_DECREF(rest_);
+
+            // decrefing a dict also aplies decref to its contents
             Py_DECREF(output);
             return NULL;
         }
 
-        // dict's setitem does an incref of its own (both value and the key),
-        // which is why `_apply_dict` logic appears different from `_tuple`
+        // dict's setitem DOES NOT steal a reference to `val` and, apparently,
+        //  to `key`, i.e. does an incref of its own (both value and the key),
+        //  which is why `_apply_dict` logic is different from `_tuple`.
+        //     https://docs.python.org/3/c-api/dict.html#c.PyDict_SetItem
         PyDict_SetItem(output, key, result);
 
         // decref the result, so that only `output` owns a ref
@@ -217,7 +231,11 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
     for(Py_ssize_t pos = 0; pos < numel; pos++) {
         main_ = PyTuple_GET_ITEM(main, pos);
         for(Py_ssize_t j = 0; j < len; j++) {
+            // `PyTuple_GET_ITEM` returns a borrowed reference (from the tuple)
+            //     https://docs.python.org/3/c-api/tuple.html#c.PyTuple_GET_ITEM
             item_ = PyTuple_GET_ITEM(PyTuple_GET_ITEM(rest, j), pos);
+
+            Py_XDECREF(PyTuple_GET_ITEM(rest_, j));
 
             Py_INCREF(item_);
             PyTuple_SET_ITEM(rest_, j, item_);
@@ -230,6 +248,9 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
             return NULL;
         }
 
+        // `PyTuple_SET_ITEM` steals references and does NOT discard refs
+        // of displaced objects.
+        //     https://docs.python.org/3/c-api/tuple.html#c.PyTuple_SetItem
         PyTuple_SET_ITEM(output, pos, result);
     }
 
@@ -245,6 +266,10 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
     if(!PyObject_HasAttrString(main, "_fields"))
         return output;
 
+    // since `namedtuple`-s are immutable and derived from `tuple`,
+    //  we can just call `tp_new` on them
+    // XXX fix this if the namedtuple's implementation changes
+    // https://docs.python.org/3/c-api/typeobj.html#c.PyTypeObject.tp_new
     PyObject *namedtuple = Py_TYPE(main)->tp_new(Py_TYPE(main), output, NULL);
     Py_DECREF(output);
 
@@ -305,7 +330,11 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
     for(Py_ssize_t pos = 0; pos < numel; pos++) {
         main_ = PyList_GET_ITEM(main, pos);
         for(Py_ssize_t j = 0; j < len; j++) {
+            // `PyList_GET_ITEM` returns a borrowed reference (from the list)
+            //     https://docs.python.org/3/c-api/list.html#c.PyList_GET_ITEM
             item_ = PyList_GET_ITEM(PyTuple_GET_ITEM(rest, j), pos);
+
+            Py_XDECREF(PyTuple_GET_ITEM(rest_, j));
 
             Py_INCREF(item_);
             PyTuple_SET_ITEM(rest_, j, item_);
@@ -318,6 +347,10 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
             return NULL;
         }
 
+        // Like `PyList_SetItem`, `PyList_SET_ITEM` steals the reference from
+        // us. However, unlike it `_SET_ITEM` DOES NOT discard refs of
+        // displaced objects. We're ok, because `output` is a NEW list.
+        //     https://docs.python.org/3/c-api/list.html#c.PyList_SET_ITEM
         PyList_SET_ITEM(output, pos, result);
     }
 
@@ -361,7 +394,11 @@ static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *re
         main_ = PyTuple_GET_ITEM(item_, 1);
 
         for(Py_ssize_t j = 0; j < len; j++) {
+            // `PyObject_GetItem` yields a new reference
+            //     https://docs.python.org/3/c-api/object.html#c.PyObject_GetItem
             item_ = PyObject_GetItem(PyTuple_GET_ITEM(rest, j), key);
+
+            Py_XDECREF(PyTuple_GET_ITEM(rest_, j));
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
@@ -685,7 +722,8 @@ int _validate(PyObject *main, PyObject *rest, objectstack &stack)
                 item_ = PyDict_GetItem(PyTuple_GET_ITEM(rest, j), key);
 
                 Py_INCREF(item_);
-                PyTuple_SET_ITEM(rest_, j, item_);
+                // XXX we're fine here with `PyTuple_SetItem`-s extra safety
+                PyTuple_SetItem(rest_, j, item_);
             }
 
             if(Py_EnterRecursiveCall("")) return 0;
@@ -714,7 +752,7 @@ int _validate(PyObject *main, PyObject *rest, objectstack &stack)
                 item_ = PyTuple_GET_ITEM(PyTuple_GET_ITEM(rest, j), pos);
 
                 Py_INCREF(item_);
-                PyTuple_SET_ITEM(rest_, j, item_);
+                PyTuple_SetItem(rest_, j, item_);
             }
 
             if(Py_EnterRecursiveCall("")) return 0;
@@ -743,7 +781,7 @@ int _validate(PyObject *main, PyObject *rest, objectstack &stack)
                 item_ = PyList_GET_ITEM(PyTuple_GET_ITEM(rest, j), pos);
 
                 Py_INCREF(item_);
-                PyTuple_SET_ITEM(rest_, j, item_);
+                PyTuple_SetItem(rest_, j, item_);
             }
 
             if(Py_EnterRecursiveCall("")) return 0;
