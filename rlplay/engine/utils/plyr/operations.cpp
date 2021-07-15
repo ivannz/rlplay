@@ -15,6 +15,14 @@ PyObject* getitem(PyObject *self, PyObject *args, PyObject *kwargs)
 }
 
 
+const PyMethodDef def_getitem = {
+    "getitem",
+    (PyCFunction) getitem,
+    METH_VARARGS | METH_KEYWORDS,
+    "getitem(object, *, index) returns object[index]",
+};
+
+
 PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     static char *kwlist[] = {"", "", "index", NULL};
@@ -32,6 +40,14 @@ PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
 }
 
 
+const PyMethodDef def_setitem = {
+    "setitem",
+    (PyCFunction) setitem,
+    METH_VARARGS | METH_KEYWORDS,
+    "setitem(object, value, *, index) does object[index] = value",
+};
+
+
 PyObject* is_sequence(PyObject *self, PyObject *object)
 {
     if(PySequence_Check(object)) {
@@ -44,6 +60,14 @@ PyObject* is_sequence(PyObject *self, PyObject *object)
 }
 
 
+const PyMethodDef def_is_sequence = {
+    "is_sequence",
+    (PyCFunction) is_sequence,
+    METH_O,
+    NULL,
+};
+
+
 PyObject* is_mapping(PyObject *self, PyObject *object)
 {
     if(PyMapping_Check(object)) {
@@ -54,30 +78,6 @@ PyObject* is_mapping(PyObject *self, PyObject *object)
 
     }
 }
-
-
-const PyMethodDef def_getitem = {
-    "getitem",
-    (PyCFunction) getitem,
-    METH_VARARGS | METH_KEYWORDS,
-    "getitem(object, *, index) returns object[index]",
-};
-
-
-const PyMethodDef def_setitem = {
-    "setitem",
-    (PyCFunction) setitem,
-    METH_VARARGS | METH_KEYWORDS,
-    "setitem(object, value, *, index) does object[index] = value",
-};
-
-
-const PyMethodDef def_is_sequence = {
-    "is_sequence",
-    (PyCFunction) is_sequence,
-    METH_O,
-    NULL,
-};
 
 
 const PyMethodDef def_is_mapping = {
