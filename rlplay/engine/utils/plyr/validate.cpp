@@ -285,3 +285,11 @@ PyObject* validate(PyObject *self, PyObject *args)
 
     return PyList_fromVector(stack);
 }
+
+
+const PyMethodDef def_validate = {
+    "validate",
+    (PyCFunction) validate,
+    METH_VARARGS,
+    "validate(*objects) validates the structure of the nested objects",
+};

@@ -59,7 +59,8 @@ static PyObject* t_ply(PyObject *self, PyObject *args, PyObject *kwargs)
 
 
 static PyMethodDef modplyr_methods[] = {
-    def_apply, {
+    def_apply,
+    {
         "suply",
         (PyCFunction) suply,
         METH_VARARGS | METH_KEYWORDS,
@@ -79,32 +80,13 @@ static PyMethodDef modplyr_methods[] = {
         (PyCFunction) t_ply,
         METH_VARARGS | METH_KEYWORDS,
         "Tuple-apply with safety checks.",
-    }, {
-        "getitem",
-        (PyCFunction) getitem,
-        METH_VARARGS | METH_KEYWORDS,
-        "getitem(object, *, index) returns object[index]",
-    }, {
-        "setitem",
-        (PyCFunction) setitem,
-        METH_VARARGS | METH_KEYWORDS,
-        "setitem(object, value, *, index) does object[index] = value",
-    }, {
-        "is_sequence",
-        (PyCFunction) is_sequence,
-        METH_O,
-        NULL,
-    }, {
-        "is_mapping",
-        (PyCFunction) is_mapping,
-        METH_O,
-        NULL,
-    }, {
-        "validate",
-        (PyCFunction) validate,
-        METH_VARARGS,
-        "validate(*objects) validates the structure of the nested objects",
-    }, {
+    },
+    def_getitem,
+    def_setitem,
+    def_is_sequence,
+    def_is_mapping,
+    def_validate,
+    {
         NULL,
         NULL,
         0,
