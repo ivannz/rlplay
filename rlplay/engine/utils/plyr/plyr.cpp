@@ -84,8 +84,12 @@ static PyMethodDef modplyr_methods[] = {
     },
     def_getitem,
     def_setitem,
+
+    // XXX debug functions
     def_is_sequence,
     def_is_mapping,
+    def_dict_getrefs,
+    def_dict_clone,
     {
         NULL,
         NULL,
