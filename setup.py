@@ -29,8 +29,10 @@ setup(
     ],
     ext_modules=[
         Extension(
-            "rlplay.engine.utils.apply", [
-                "rlplay/engine/utils/plyr/apply.cpp",
+            "rlplay.engine.utils.plyr", [
+                "rlplay/engine/utils/plyr/plyr.cpp",
+            ], include_dirs=[
+                "rlplay/engine/utils/plyr/include"
             ], extra_compile_args=[
                 "-O3", "-Ofast"
             ], language="c++",
