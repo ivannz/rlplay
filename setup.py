@@ -31,6 +31,7 @@ setup(
         Extension(
             "rlplay.engine.utils.plyr", [
                 "rlplay/engine/utils/plyr/plyr.cpp",
+                "rlplay/engine/utils/plyr/validate.cpp",
             ], include_dirs=[
                 "rlplay/engine/utils/plyr/include"
             ], extra_compile_args=[
