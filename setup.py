@@ -30,7 +30,7 @@ setup(
     ext_modules=[
         Extension(
             "rlplay.engine.utils.apply", [
-                "rlplay/engine/utils/apply.cpp",
+                "rlplay/engine/utils/plyr/apply.cpp",
             ], extra_compile_args=[
                 "-O3", "-Ofast"
             ], language="c++",
