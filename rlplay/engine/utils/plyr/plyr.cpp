@@ -60,6 +60,7 @@ static PyObject* t_ply(PyObject *self, PyObject *args, PyObject *kwargs)
 
 static PyMethodDef modplyr_methods[] = {
     def_apply,
+    def_validate,
     {
         "suply",
         (PyCFunction) suply,
@@ -85,7 +86,6 @@ static PyMethodDef modplyr_methods[] = {
     def_setitem,
     def_is_sequence,
     def_is_mapping,
-    def_validate,
     {
         NULL,
         NULL,
