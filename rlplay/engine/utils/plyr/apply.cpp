@@ -86,19 +86,18 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
     //     https://docs.python.org/3/c-api/dict.html#c.PyDict_Next
     while (PyDict_Next(main, &pos, &key, &main_)) {
         for(Py_ssize_t j = 0; j < len; j++) {
-            // `PyDict_GetItem` returns a borrowed reference
+            // `PyDict_GetItem` and `PyTuple_GET_ITEM` return a borrowed reference
             //     https://docs.python.org/3/c-api/dict.html#c.PyDict_GetItem
             item_ = PyDict_GetItem(PyTuple_GET_ITEM(rest, j), key);
 
-            // Unlike `PyTuple_SetItem`, `PyTuple_SET_ITEM` does not discard
-            //  references to items being replaced!
+            // `PyTuple_SetItem` decrefs any non-NULL item already in the tuple
+            //  at the affected position. In contrast, `PyTuple_SET_ITEM` does
+            //  NOT discard references to items being replaced!
             //    https://docs.python.org/3/c-api/tuple.html#c.PyTuple_SetItem
             Py_XDECREF(PyTuple_GET_ITEM(rest_, j));
 
             // a tuple assumes ownership of, or 'steals', the reference, owned
-            // by a dict from `rest`, so we incref it for protection. It also
-            // decrefs `any item already in the tuple at the affected position
-            // (if non NULL).`
+            //  by a dict from `rest`, so we incref it for protection.
             Py_INCREF(item_);
             PyTuple_SET_ITEM(rest_, j, item_);
         }
@@ -113,7 +112,7 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
             return NULL;
         }
 
-        // dict's setitem DOES NOT steal a reference to `val` and, apparently,
+        // dict's setitem DOES NOT steal references to `val` and, apparently,
         //  to `key`, i.e. does an incref of its own (both value and the key),
         //  which is why `_apply_dict` logic is different from `_tuple`.
         //     https://docs.python.org/3/c-api/dict.html#c.PyDict_SetItem
@@ -245,10 +244,10 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
 static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *rest,
                                 bool const safe, bool const star, PyObject *kwargs)
 {
-    // XXX it's unlikely that we will ever use this branch, because as docs
-    // it is impossible to know the type of keys of a mapping at runtime,
-    //  hence lists, tuples, dicts and any objects with `__getitem__` are
-    //  mappings according to `PyMapping_Check`.
+    // XXX it's unlikely that we will ever use this branch, because as docs say
+    //  it is impossible to know the type of keys of a mapping at runtime, hence
+    //  lists, tuples, dicts and any objects with `__getitem__` are mappings
+    //  according to `PyMapping_Check`.
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *key, *main_, *item_, *rest_ = PyTuple_New(len);
     if(rest_ == NULL)
