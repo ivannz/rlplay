@@ -12,7 +12,7 @@ from collections import namedtuple
 
 from ..core import prepare, startup, collect
 
-from ..utils.apply import suply
+from ..utils.plyr import suply
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.shared import Aliased, numpify, torchify
 

@@ -3,8 +3,7 @@ import numpy
 
 from collections import namedtuple
 
-from .utils.apply import suply, tuply, setitem, getitem
-from .utils.shared import aliased, torchify
+from .utils import suply, tuply, setitem, getitem, aliased, torchify
 
 
 State = namedtuple('State', ['obs', 'act', 'rew', 'fin'])

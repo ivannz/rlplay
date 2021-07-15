@@ -10,7 +10,7 @@ from ..core import prepare, startup, collect
 
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.multiprocessing import start_processes
-from ..utils.apply import suply, tuply, getitem
+from ..utils.plyr import suply, tuply, getitem
 from ..utils.shared import Aliased, numpify, torchify
 
 
