@@ -59,12 +59,7 @@ static PyObject* t_ply(PyObject *self, PyObject *args, PyObject *kwargs)
 
 
 static PyMethodDef modplyr_methods[] = {
-    {
-        "apply",
-        (PyCFunction) apply,
-        METH_VARARGS | METH_KEYWORDS,
-        __doc__,
-    }, {
+    def_apply, {
         "suply",
         (PyCFunction) suply,
         METH_VARARGS | METH_KEYWORDS,
@@ -116,6 +111,7 @@ static PyMethodDef modplyr_methods[] = {
         NULL,
     }
 };
+
 
 static struct PyModuleDef moduledef = {
         PyModuleDef_HEAD_INIT,

@@ -64,7 +64,7 @@ const char *__doc__ = "\n"
 
 
 PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
-                        bool const safe, bool const star, PyObject *kwargs);
+                 bool const safe, bool const star, PyObject *kwargs);
 
 
 static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
@@ -443,3 +443,11 @@ PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
 
     return result;
 }
+
+
+const PyMethodDef def_apply = {
+    "apply",
+    (PyCFunction) apply,
+    METH_VARARGS | METH_KEYWORDS,
+    __doc__,
+};
