@@ -33,6 +33,7 @@ setup(
                 "rlplay/engine/utils/plyr/plyr.cpp",
                 "rlplay/engine/utils/plyr/validate.cpp",
                 "rlplay/engine/utils/plyr/operations.cpp",
+                "rlplay/engine/utils/plyr/apply.cpp",
             ], include_dirs=[
                 "rlplay/engine/utils/plyr/include"
             ], extra_compile_args=[
