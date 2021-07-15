@@ -143,7 +143,7 @@ static PyObject* PyList_fromVector(objectstack &stack)
 }
 
 
-int _validate(PyObject *main, PyObject *rest, objectstack &stack)
+static int _validate(PyObject *main, PyObject *rest, objectstack &stack)
 {
     int result;
 
