@@ -898,7 +898,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     # `ctx` is $x_*, a_{-1}, r_0, \top, h_0$, where `r_0` is undefined
 
     # fast access to context's aliases
-    npy, pyt, hx = ctx.npy, ctx.pyt, None
+    npy, pyt = ctx.npy, ctx.pyt
 
     # Allocate an on-device context and recurrent state, if not on 'host'
     pyt_ = pyt
@@ -909,11 +909,22 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     # render ony in case of a single-env evaluation
     fn_render = envs[0].render if len(envs) == 1 and render else lambda: True
 
-    rewards, done, t = [], False, 0
+    # collect the evaluation data: let the actor init `hx` for us
+    rewards, done, t, bootstrap, hx = [], False, 0, None, None
     while not done and t < n_steps and fn_render():
         # REACT: $(x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
-        act_, hx, _ = actor.step(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
+        act_, hx, info_actor = actor.step(pyt_.obs, pyt_.act,
+                                          pyt_.rew, pyt_.fin, hx=hx)
         tensor_copy_(pyt.act, act_)
+
+        # fetch the bootstrap value $v(x_t)$ (a new `1 x n_envs` tensor)
+        value = info_actor['value'].cpu().numpy()[0]
+        if bootstrap is not None:
+            # update according to the mask of terminated envs
+            numpy.copyto(bootstrap, value, where=~npy.fin)
+
+        else:
+            bootstrap = value
 
         # STEP + EMIT: `.step` through a batch of envs
         for j, env in enumerate(envs):
@@ -940,7 +951,4 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
         if pyt_ is not pyt:
             tensor_copy_(pyt_, pyt)
 
-    # compute the bootstrap value $v(x_T)$ (a new `1 x n_envs` tensor)
-    bootstrap = actor.value(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
-
-    return numpy.stack(rewards, axis=0), bootstrap.cpu().numpy()[0]
+    return numpy.stack(rewards, axis=0), bootstrap
