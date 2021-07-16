@@ -731,6 +731,9 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
       * `.state[t]` -->> `.state[t+1].act` and `.actor[t]`
       * `.state[t], .state[t+1].act` -->> `.env[t]` and rest of `.state[t+1]`
     """
+    device = torch.device('cpu') if device is None else device
+    # assert isinstance(device, torch.device)
+    on_host = device.type == 'cpu'
 
     # write the initial recurrent state of the actor to the shared buffer
     tensor_copy_(fragment.pyt.hx, context.pyt.hx)
@@ -743,9 +746,11 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     # `pyt/npy` is $x_t, a_{t-1}, r_t$, $d_t$, and $h_t$
     npy, pyt = context.npy.state, context.pyt.state
 
-    # Allocate on-device context and recurrent state, if device is not None
+    # Allocate on-device context and recurrent state, if device is not `host`
     pyt_ = pyt
-    if device is not None:
+    # XXX even if the device is host, `suply` creates a new nested
+    #  contianer, which makes the check on L825 always succeed.
+    if not on_host:
         # XXX this also copies data in `pyt` into `pyt_`
         pyt_, hx = suply(torch.Tensor.to, (pyt_, hx), device=device)
 
@@ -886,18 +891,18 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
 
     # always pin the runtime context if the device is 'cuda'
     device = torch.device('cpu') if device is None else device
-    pinned = device.type == 'cuda'
+    pinned, on_host = device.type == 'cuda', device.type == 'cpu'
 
-    # prepare a for the specified number of envs running context
+    # prepare a running context for the specified number of envs
     ctx = context(*envs, pinned=pinned)
     # `ctx` is $x_*, a_{-1}, r_0, \top, h_0$, where `r_0` is undefined
 
     # fast access to context's aliases
     npy, pyt, hx = ctx.npy, ctx.pyt, None
 
-    # Allocate on-device context and recurrent state, if device is not None
+    # Allocate an on-device context and recurrent state, if not on 'host'
     pyt_ = pyt
-    if device is not None:
+    if not on_host:
         # XXX this also copies data in `pyt` into `pyt_`
         pyt_ = suply(torch.Tensor.to, pyt_, device=device)
 
