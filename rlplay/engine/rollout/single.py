@@ -21,17 +21,21 @@ Control = namedtuple('Control', ['reflock', 'barrier', 'error'])
 
 
 def p_double(
-    ctrl, factory, buffers, shared, *, sticky=False, close=False, device=None
+    ctrl, factory, buffers, shared,
+    *, clone=True, sticky=False, close=False, device=None
 ):
     # always pin the runtime context if the device is 'cuda'
     device = torch.device('cpu') if device is None else device
-    pinned = device.type == 'cuda'
+    pinned, on_host = device.type == 'cuda', device.type == 'cpu'
 
     # disable mutlithreaded computations in the worker processes
     torch.set_num_threads(1)
 
-    # make an identical local copy of the reference actor on cpu
-    actor = deepcopy(shared).to(device)
+    # use the reference actor is not on device
+    actor = shared
+    if not on_host or clone:
+        # make an identical local copy
+        actor = deepcopy(shared).to(device)
 
     # prepare local envs and the associated local env-state runtime context
     n_envs = buffers[0].state.fin.shape[1]  # `fin` is always T x B
@@ -57,8 +61,9 @@ def p_double(
             ctrl.barrier.wait()
 
             # ensure consistent parameter update from the shared reference
-            with ctrl.reflock:
-                actor.load_state_dict(shared.state_dict(), strict=True)
+            if actor is not shared:
+                with ctrl.reflock:
+                    actor.load_state_dict(shared.state_dict(), strict=True)
 
             # switch to the next fragment buffer
             flipflop = 1 - flipflop
@@ -85,7 +90,7 @@ def p_double(
 
 def rollout(
     factory, actor, n_steps, n_envs,
-    *, sticky=False, close=False, device=None,
+    *, sticky=False, close=False, clone=True, device=None,
     start_method=None, affinity=None
 ):
     r"""UPDATE THE DOC
@@ -189,7 +194,7 @@ def rollout(
     p_worker = mp.Process(
         target=p_double, daemon=False,
         args=(ctrl, CloudpickleSpawner(factory), double, shared),
-        kwargs=dict(sticky=sticky, close=close, device=affinity),
+        kwargs=dict(clone=clone, sticky=sticky, close=close, device=affinity),
     )
     p_worker.start()
 

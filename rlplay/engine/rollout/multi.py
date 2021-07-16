@@ -19,7 +19,7 @@ Control = namedtuple('Control', ['reflock', 'empty', 'ready'])
 
 def p_stepper(
     rk, ws, ctrl, factory, buffers, shared,
-    sticky=False, close=True, affinity=None
+    clone=True, sticky=False, close=True, affinity=None
 ):
     r"""Trajectory fragment collection subprocess.
 
@@ -41,7 +41,7 @@ def p_stepper(
 
     # always pin the runtime context if the device is 'cuda'
     device = torch.device('cpu') if device is None else device
-    pinned = device.type == 'cuda'
+    pinned, on_host = device.type == 'cuda', device.type == 'cpu'
 
     # disable mutlithreaded computations in the worker processes
     torch.set_num_threads(1)
@@ -51,8 +51,11 @@ def p_stepper(
     if ix is None:
         return
 
-    # make an identical local copy of the reference actor on cpu
-    actor = deepcopy(shared).to(device)
+    # use the reference actor is not on device
+    actor = shared
+    if not on_host or clone:
+        # make an identical local copy
+        actor = deepcopy(shared).to(device)
 
     # prepare local envs and the associated local env-state runtime context
     n_envs = buffers[ix].state.fin.shape[1]  # `fin` is always T x B
@@ -66,9 +69,10 @@ def p_stepper(
     try:
         while ix is not None:
             # ensure consistent parameter update from the shared reference
-            with ctrl.reflock:
-                actor.load_state_dict(shared.state_dict(), strict=True)
-                # XXX tau-moving average update?
+            if actor is not shared:
+                with ctrl.reflock:
+                    actor.load_state_dict(shared.state_dict(), strict=True)
+                    # XXX tau-moving average update?
 
             # XXX `aliased` redundantly traverses `pyt` nested containers, but
             # `buffers` are allways torch tensors, so we just numpify them.
@@ -100,7 +104,7 @@ def rollout(
     # the size of the rollout buffer pool (must have spare buffers)
     n_buffers=16,
     n_per_batch=4,
-    *, sticky=False, pinned=False, close=False, device=None,
+    *, sticky=False, pinned=False, close=False, clone=True, device=None,
     start_method=None, timeout=10, affinity=None
 ):
     # the device to put the batches onto
@@ -160,7 +164,7 @@ def rollout(
         # collectors' device may be other than the main device
         join=False, args=(
             n_actors, ctrl, CloudpickleSpawner(factory), buffers, shared,
-            sticky, close, affinity
+            clone, sticky, close, affinity
         ))
 
     # fetch for ready trajectory fragments and collate them into a batch
