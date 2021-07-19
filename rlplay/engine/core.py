@@ -880,10 +880,14 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
         The sum of the obtained rewards accumulated during the rollout in each
         test environment.
 
+    bootstrap : numpy.array
+        The value estimate of the final state in the truncated rollout (finite
+        `n_steps`).
+
     Details
     -------
-    This function is very similar to `collect()`, except that it does not
-    record the rollout data, except for the rewards from the environment.
+    This function is very similar to `collect()`, except that it records
+    only the rewards from the environment, instead of the full rollout data.
     """
 
     n_steps = n_steps or float('+inf')
@@ -910,21 +914,12 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     fn_render = envs[0].render if len(envs) == 1 and render else lambda: True
 
     # collect the evaluation data: let the actor init `hx` for us
-    rewards, done, t, bootstrap, hx = [], False, 0, None, None
+    rewards, done, t, hx = [], False, 0, None
     while not done and t < n_steps and fn_render():
         # REACT: $(x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
         act_, hx, info_actor = actor.step(pyt_.obs, pyt_.act,
                                           pyt_.rew, pyt_.fin, hx=hx)
         tensor_copy_(pyt.act, act_)
-
-        # fetch the bootstrap value $v(x_t)$ (a new `1 x n_envs` tensor)
-        value = info_actor['value'].cpu().numpy()[0]
-        if bootstrap is not None:
-            # update according to the mask of terminated envs
-            numpy.copyto(bootstrap, value, where=~npy.fin)
-
-        else:
-            bootstrap = value
 
         # STEP + EMIT: `.step` through a batch of envs
         for j, env in enumerate(envs):
@@ -951,4 +946,15 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
         if pyt_ is not pyt:
             tensor_copy_(pyt_, pyt)
 
-    return numpy.stack(rewards, axis=0), bootstrap
+    # compute the bootstrap value $v(x_T)$ (a new `1 x n_envs` tensor)
+    bootstrap = actor.value(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin,
+                            hx=hx).cpu().numpy()
+
+    # bootstrap is the estimate of the value function at the current state. If
+    #  `pyt_` is terminal, then it's original `act` and `rew` might have been
+    #  overwritten. Thus we force the value estimate to be `zero`. Otherwise,
+    #  if we hae run out of steps, the contents in `pyt_` are from the next
+    #  state in the rollout.
+    numpy.putmask(bootstrap, npy.fin, 0.)
+
+    return numpy.stack(rewards, axis=0), bootstrap[0]
