@@ -735,6 +735,11 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     # assert isinstance(device, torch.device)
     on_host = device.type == 'cpu'
 
+    # determine what auxiliary data should be recorded
+    fragment_has_next_obs = hasattr(fragment.npy.state, 'next_obs')
+    fragment_has_env = hasattr(fragment.npy, 'env')
+    fragment_has_actor = hasattr(fragment.pyt, 'actor')
+
     # write the initial recurrent state of the actor to the shared buffer
     tensor_copy_(fragment.pyt.hx, context.pyt.hx)
 
@@ -767,7 +772,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
         # copy the state $x_t, a_{t-1}, r_t$, and $d_t$ from `ctx` to `out[t]`
         suply(setitem, out, npy, index=t)  # XXX is torch faster?
-        if hasattr(out, 'next_obs'):
+        if fragment_has_next_obs:
             suply(setitem, out.next_obs, npy.next_obs, index=t)
 
         # REACT: $(a_t, h_{t+1})$ are actor's reaction to `.state[t]` and `hx`,
@@ -782,7 +787,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
         # the actor may return device-resident tensors, so we copy them here
         tensor_copy_(pyt.act, act_)  # commit $a_t$ into `ctx`
-        if info_actor:
+        if fragment_has_actor:
             # fragment.pyt is likely to have `is_shared() = True`, so it cannot
             #  be in the pinned memory.
             tensor_copy_(fragment.pyt.actor, info_actor,
@@ -803,7 +808,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
             # get $(s_t, a_t) \to (s_{t+1}, x_{t+1}, r_{t+1}, d_{t+1})$
             obs_, rew_, fin_, info_env = env.step(npy.act[j])
             suply(setitem, npy_next_obs, obs_, index=j)
-            if info_env:
+            if fragment_has_env and info_env:
                 suply(setitem, fragment.npy.env, info_env,
                       index=(t, j))  # `.env[t, j] <- info`
 
@@ -837,7 +842,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     #  the target q-value at $x_{t+1}$ anyway if $s_{t+1}$ is terminal, i.e.
     #  $d_{t+1}=\top$, and x_{t+1}=s_*.
 
-    if hasattr(out, 'next_obs'):
+    if fragment_has_next_obs:
         suply(setitem, out.next_obs, npy_next_obs, index=t + 1)
 
     # compute the bootstrapped value estimate for each env
@@ -953,7 +958,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     # bootstrap is the estimate of the value function at the current state. If
     #  `pyt_` is terminal, then it's original `act` and `rew` might have been
     #  overwritten. Thus we force the value estimate to be `zero`. Otherwise,
-    #  if we hae run out of steps, the contents in `pyt_` are from the next
+    #  if we have run out of steps, the contents in `pyt_` are from the next
     #  state in the rollout.
     numpy.putmask(bootstrap, npy.fin, 0.)
 
