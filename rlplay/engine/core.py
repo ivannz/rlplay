@@ -773,7 +773,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
         # copy the state $x_t, a_{t-1}, r_t$, and $d_t$ from `ctx` to `out[t]`
         suply(setitem, out, npy, index=t)  # XXX is torch faster?
         if fragment_has_next_obs:
-            suply(setitem, out.next_obs, npy.next_obs, index=t)
+            suply(setitem, out.next_obs, npy_next_obs, index=t)
 
         # REACT: $(a_t, h_{t+1})$ are actor's reaction to `.state[t]` and `hx`,
         #  i.e. $(x_t, a_{t-1}, r_t, d_t)$, and $h_t$, respectively.
@@ -831,24 +831,26 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
         if pyt_ is not pyt:
             tensor_copy_(pyt_, pyt)
 
-    # write back the most recent recurrent state for the next rollout
-    tensor_copy_(context.pyt.hx, hx)
-
     # record the $(x_T, a_{T-1}, r_T, d_T)$ from `ctx` into `out[T]`
     suply(setitem, out, npy, index=t + 1)  # t is len(out.fin) - 1
+    if fragment_has_next_obs:
+        suply(setitem, out.next_obs, npy_next_obs, index=t + 1)
     # XXX This is OK for DQN-methods and SARSA since `out[t]` and `out[t+1]`
     #  are consecutive if $d_{t+1}$ (`out.fin[t+1]`) is False, and together
     #  contain $x_t, a_t, r_{t+1}$ and $x_{t+1}$. Also DQN methods ignore
     #  the target q-value at $x_{t+1}$ anyway if $s_{t+1}$ is terminal, i.e.
     #  $d_{t+1}=\top$, and x_{t+1}=s_*.
 
-    if fragment_has_next_obs:
-        suply(setitem, out.next_obs, npy_next_obs, index=t + 1)
-
     # compute the bootstrapped value estimate for each env
+    # XXX essentially this is a REACT step: we ask the actor to compute a
+    #  partial response to the last state, i.e. take only the value function
+    #  on $(x_T, a_{T-1}, r_T, d_T)$ and $ h_T$.
     if hasattr(fragment.pyt, 'bootstrap'):
         bootstrap = actor.value(pyt_.obs, pyt_.act, pyt_.rew, pyt_.fin, hx=hx)
         tensor_copy_(fragment.pyt.bootstrap, bootstrap)
+
+    # write back the most recent recurrent state for the next rollout
+    tensor_copy_(context.pyt.hx, hx)
 
     return True
 
