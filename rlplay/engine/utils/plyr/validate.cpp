@@ -2,47 +2,85 @@
 #include <validate.h>
 
 
+static const char *__doc__ = "\n"
+    "validate(*objects)\n"
+    "\n"
+    "Validate the structure of the nested objects (see `apply` and caveats).\n"
+    "\n"
+    "Returns\n"
+    "-------\n"
+    "result : list\n"
+    "    An empty list, if the objects have IDENTICAL structure (nesting and\n"
+    "    container types). Otherwise, contains the error in its last element\n"
+    "    preceded by the index/key path within the nesting structure. The error\n"
+    "    is a tuple with three elements: the index of the object in the arguments,\n"
+    "    the type of the raised exception, and the value of the exception.\n"
+    "\n"
+;
+
+
+int _raise_TypeError(Py_ssize_t index, PyObject *main, PyObject *obj, objectstack *stack)
+{
+    char error[160];
+    PyOS_snprintf(error, 160, "Expected '%s', got '%s'",
+                  Py_TYPE(main)->tp_name, Py_TYPE(obj)->tp_name);
+
+    if(stack != NULL) {
+        stack->push_back(Py_BuildValue("(nOs)", index, PyExc_TypeError, error));
+
+    } else {
+        PyErr_SetString(PyExc_TypeError, error);
+
+    }
+
+    return 0;
+}
+
+
+int _raise_SizeError(Py_ssize_t index, PyObject *main, objectstack *stack)
+{
+    char error[160];
+    PyOS_snprintf(error, 160, "'%s' size mismatch", Py_TYPE(main)->tp_name);
+
+    if(stack != NULL) {
+        stack->push_back(Py_BuildValue("(nOs)", index, PyExc_RuntimeError, error));
+
+    } else {
+        PyErr_SetString(PyExc_RuntimeError, error);
+
+    }
+
+    return 0;
+}
+
+
 int _validate_dict(PyObject *main, PyObject *rest, objectstack *stack)
 {
     Py_ssize_t numel = PyDict_Size(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
-        if(stack != NULL)
-            stack->push_back(PyLong_FromSsize_t(j+1));
-
         PyObject *key, *value, *obj = PyTuple_GET_ITEM(rest, j);
 
-        if(!PyDict_Check(obj)) {
-            if(stack != NULL)
-                stack->push_back(Py_BuildValue("s", Py_TYPE(obj)->tp_name));
+        if(!Py_IS_TYPE(obj, Py_TYPE(main)))
+            return _raise_TypeError(j+1, main, obj, stack);
 
-            PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
-            return 0;
-        }
+        if(numel != PyDict_Size(obj))
+            return _raise_SizeError(j+1, main, stack);
 
         Py_ssize_t pos = 0;
         while (PyDict_Next(main, &pos, &key, &value)) {
             if(!PyDict_Contains(obj, key)) {
                 if(stack != NULL) {
                     Py_INCREF(key);
-                    stack->push_back(key);
+                    stack->push_back(Py_BuildValue(
+                        "(nOO)", j+1, PyExc_KeyError, key));
+
+                } else {
+                    PyErr_SetObject(PyExc_KeyError, key);
+
                 }
 
-                PyErr_SetObject(PyExc_KeyError, key);
                 return 0;
             }
-        }
-
-        if(numel != PyDict_Size(obj)) {
-            if(stack != NULL)
-                stack->push_back(Py_BuildValue("s", "dict size mismatch"));
-
-            PyErr_SetString(PyExc_RuntimeError, "dict size mismatch");
-            return 0;
-        }
-
-        if(stack != NULL) {
-            Py_DECREF(stack->back());
-            stack->pop_back();
         }
     }
 
@@ -54,31 +92,13 @@ int _validate_tuple(PyObject *main, PyObject *rest, objectstack *stack)
 {
     Py_ssize_t numel = PyTuple_GET_SIZE(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
-        if(stack != NULL)
-            stack->push_back(PyLong_FromSsize_t(j+1));
-
         PyObject *obj = PyTuple_GET_ITEM(rest, j);
 
-        if(!PyTuple_Check(obj)) {
-            if(stack != NULL)
-                stack->push_back(Py_BuildValue("s", Py_TYPE(obj)->tp_name));
+        if(!Py_IS_TYPE(obj, Py_TYPE(main)))
+            return _raise_TypeError(j+1, main, obj, stack);
 
-            PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
-            return 0;
-        }
-
-        if(numel != PyTuple_GET_SIZE(obj)) {
-            if(stack != NULL)
-                stack->push_back(Py_BuildValue("s", "tuple length mismatch"));
-
-            PyErr_SetString(PyExc_RuntimeError, "tuple length mismatch");
-            return 0;
-        }
-
-        if(stack != NULL) {
-            Py_DECREF(stack->back());
-            stack->pop_back();
-        }
+        if(numel != PyTuple_GET_SIZE(obj))
+            return _raise_SizeError(j+1, main, stack);
     }
 
     return 1;
@@ -89,31 +109,13 @@ int _validate_list(PyObject *main, PyObject *rest, objectstack *stack)
 {
     Py_ssize_t numel = PyList_GET_SIZE(main);
     for(Py_ssize_t j = 0; j < PyTuple_GET_SIZE(rest); ++j) {
-        if(stack != NULL)
-            stack->push_back(PyLong_FromSsize_t(j+1));
-
         PyObject *obj = PyTuple_GET_ITEM(rest, j);
 
-        if(!PyList_Check(obj)) {
-            if(stack != NULL)
-                stack->push_back(Py_BuildValue("s", Py_TYPE(obj)->tp_name));
+        if(!Py_IS_TYPE(obj, Py_TYPE(main)))
+            return _raise_TypeError(j+1, main, obj, stack);
 
-            PyErr_SetString(PyExc_TypeError, Py_TYPE(obj)->tp_name);
-            return 0;
-        }
-
-        if(numel != PyList_GET_SIZE(obj)) {
-            if(stack != NULL)
-                stack->push_back(Py_BuildValue("s", "list length mismatch"));
-
-            PyErr_SetString(PyExc_RuntimeError, "list length mismatch");
-            return 0;
-        }
-
-        if(stack != NULL) {
-            Py_DECREF(stack->back());
-            stack->pop_back();
-        }
+        if(numel != PyList_GET_SIZE(obj))
+            return _raise_SizeError(j+1, main, stack);
     }
 
     return 1;
@@ -281,8 +283,6 @@ PyObject* validate(PyObject *self, PyObject *args)
 
     Py_DECREF(rest);
 
-    PyErr_Clear();
-
     return PyList_fromVector(stack);
 }
 
@@ -291,5 +291,5 @@ const PyMethodDef def_validate = {
     "validate",
     (PyCFunction) validate,
     METH_VARARGS,
-    "validate(*objects) validates the structure of the nested objects",
+    __doc__,
 };
