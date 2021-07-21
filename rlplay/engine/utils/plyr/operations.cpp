@@ -24,6 +24,26 @@ const PyMethodDef def_getitem = {
 };
 
 
+PyObject* xgetitem(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    // quick check for None
+    PyObject *object = PyTuple_GetItem(args, 0);
+    // https://docs.python.org/3/c-api/none.html
+    if(object == Py_None)
+        Py_RETURN_NONE;
+
+    return getitem(self, args, kwargs);
+}
+
+
+const PyMethodDef def_xgetitem = {
+    "xgetitem",
+    (PyCFunction) xgetitem,
+    METH_VARARGS | METH_KEYWORDS,
+    "`xgetitem` -- the same as `getitem`, but allows None through",
+};
+
+
 PyObject* setitem(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     static char *kwlist[] = {"", "", "index", NULL};
@@ -46,6 +66,26 @@ const PyMethodDef def_setitem = {
     (PyCFunction) setitem,
     METH_VARARGS | METH_KEYWORDS,
     "setitem(object, value, *, index) does object[index] = value",
+};
+
+
+PyObject* xsetitem(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    // quick check for None
+    PyObject *object = PyTuple_GetItem(args, 0);
+    // https://docs.python.org/3/c-api/none.html
+    if(object == Py_None)
+        Py_RETURN_NONE;
+
+    return setitem(self, args, kwargs);
+}
+
+
+const PyMethodDef def_xsetitem = {
+    "xsetitem",
+    (PyCFunction) xsetitem,
+    METH_VARARGS | METH_KEYWORDS,
+    "`xsetitem` -- the same as `setitem`, but allows None through",
 };
 
 

@@ -85,6 +85,9 @@ static PyMethodDef modplyr_methods[] = {
     def_getitem,
     def_setitem,
 
+    def_xgetitem,
+    def_xsetitem,
+
     // XXX debug functions
     def_is_sequence,
     def_is_mapping,
