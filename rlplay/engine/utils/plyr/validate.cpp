@@ -69,8 +69,9 @@ int _validate_dict(PyObject *main, PyObject *rest, objectstack *stack)
         Py_ssize_t pos = 0;
         while (PyDict_Next(main, &pos, &key, &value)) {
             if(!PyDict_Contains(obj, key)) {
+                // no need for incref on the key, since both `buildvalue`
+                // and `setobject` incref the value.
                 if(stack != NULL) {
-                    Py_INCREF(key);
                     stack->push_back(Py_BuildValue(
                         "(nOO)", j+1, PyExc_KeyError, key));
 
@@ -124,19 +125,17 @@ int _validate_list(PyObject *main, PyObject *rest, objectstack *stack)
 
 static PyObject* PyList_fromVector(objectstack &stack)
 {
-    // steals references from the std::vector
     PyObject *list = PyList_New(stack.size());
-    if(list == NULL)
-        return NULL;
+    if(list == NULL) {
+        // could not allocate new list: decref stolen refs
+        for(Py_ssize_t j = 0; j < stack.size(); ++j)
+            Py_XDECREF(stack[j]);
 
-    for(Py_ssize_t j = 0; j < stack.size(); ++j) {
-        PyObject *item = stack[j];
-        if(item == NULL) {
-            Py_DECREF(list);
-            return NULL;
-        }
+    } else {
+        // transfer the stolen ownership from std::vector to the list
+        for(Py_ssize_t j = 0; j < stack.size(); ++j)
+            PyList_SET_ITEM(list, j, stack[j]);
 
-        PyList_SET_ITEM(list, j, item);
     }
 
     stack.clear();
@@ -195,6 +194,11 @@ static int _validate(PyObject *main, PyObject *rest, objectstack &stack)
 
         for(Py_ssize_t pos = 0; pos < PyTuple_GET_SIZE(main); pos++) {
             key = PyLong_FromSsize_t(pos);
+            if(key == NULL) {
+                Py_DECREF(rest_);
+                return 0;
+            }
+
             stack.push_back(key);
 
             main_ = PyTuple_GET_ITEM(main, pos);
@@ -224,6 +228,11 @@ static int _validate(PyObject *main, PyObject *rest, objectstack &stack)
 
         for(Py_ssize_t pos = 0; pos < PyList_GET_SIZE(main); pos++) {
             key = PyLong_FromSsize_t(pos);
+            if(key == NULL) {
+                Py_DECREF(rest_);
+                return 0;
+            }
+
             stack.push_back(key);
 
             main_ = PyList_GET_ITEM(main, pos);
@@ -280,8 +289,15 @@ PyObject* validate(PyObject *self, PyObject *args)
 
     // dfs through the structures: updates stack and set exceptions in case of an emergency
     _validate(main, rest, stack);
-
     Py_DECREF(rest);
+
+    if(PyErr_Occurred() != NULL) {
+        for(Py_ssize_t j = 0; j < stack.size(); ++j)
+            Py_XDECREF(stack[j]);
+
+        stack.clear();
+        return NULL;
+    }
 
     return PyList_fromVector(stack);
 }
