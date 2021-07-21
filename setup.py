@@ -3,7 +3,7 @@ from setuptools import setup, Extension
 setup(
     name='RLPlay',
     description="""Some prototypes for RL and toy experiments.""",
-    version='0.5.1',
+    version='0.5.2',
     license='MIT',
     packages=[
         'rlplay',
