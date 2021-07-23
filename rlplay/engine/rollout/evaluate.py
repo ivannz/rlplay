@@ -58,21 +58,11 @@ def p_evaluate(
     try:
         while True:
             # collect the evaluation data: let the actor init `hx` for us
-            rewards, done, t, bootstrap, hx = [], False, 0, None, None
+            rewards, done, t, hx = [], False, 0, None
             while not done and t < n_steps:
                 # REACT: $(x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
-                act_, hx, info_actor = actor.step(pyt_.obs, pyt_.act,
-                                                  pyt_.rew, pyt_.fin, hx=hx)
+                act_, hx, value, info_actor = actor.step(*pyt_, hx=hx)
                 tensor_copy_(pyt.act, act_)
-
-                # fetch the bootstrap value $v(x_t)$ (a new `1 x n_envs` tensor)
-                value = info_actor['value'].cpu().numpy()
-                if bootstrap is not None:
-                    # update according to the mask of terminated envs'
-                    numpy.copyto(bootstrap, value, where=~npy.fin)
-
-                else:
-                    bootstrap = value
 
                 # STEP + EMIT: `.step` through a batch of envs
                 for j, env in enumerate(envs):
@@ -83,8 +73,11 @@ def p_evaluate(
 
                     # get $(s_t, a_t) \to (s_{t+1}, x_{t+1}, r_{t+1}, d_{t+1})$
                     obs_, rew_, fin_, info_env = env.step(npy.act[j])
+                    npy.stepno[j] += 1
                     if fin_:
+                        npy.stepno[j] = 0  # start a new trajectory
                         obs_ = env.reset()  # s_{t+1} \to s_*, emit x_* from s_*
+                        # XXX unlike `core.collect`. do not reset `hx[j]` here
 
                     # update the j-th env's '$x_{t+1}, r_{t+1}, d_{t+1}$ in `ctx`
                     suply(setitem, npy.obs, obs_, index=j)
@@ -100,6 +93,12 @@ def p_evaluate(
                 # track rewards only
                 rewards.append(npy.rew.copy())
                 t += 1
+
+            # compute the bootstrap value $v(x_T)$ (a new `1 x n_envs` tensor)
+            # XXX see `core.evaluate` for details.
+            act_, hx, value, info_actor = actor.step(*pyt_, hx=hx)
+            bootstrap = value.cpu().numpy()
+            numpy.putmask(bootstrap, npy.fin, 0.)
 
             # update parameters from the shared reference actor
             try:
