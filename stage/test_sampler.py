@@ -27,7 +27,7 @@ class Actor(BaseActorModule):
         self.baseline = torch.nn.Linear(n_h_dim, 1)
         self.register_buffer('_counter', torch.zeros(1))
 
-    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None):
+    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None, stepno=None):
         # Everything is  [T x B x ...]
         n_steps, n_env, *_ = obs.shape
         input = self.emb_obs(obs)
@@ -43,7 +43,7 @@ class Actor(BaseActorModule):
             actions = logits.argmax(dim=-1)
 
         # rnn states, value estimates, and other info
-        return actions, hx, dict(value=value, logits=logits)
+        return actions, hx, value, dict(logits=logits)
 
 
 class SimpleActor(BaseActorModule):
@@ -56,7 +56,7 @@ class SimpleActor(BaseActorModule):
 
         self.register_buffer('_counter', torch.zeros(1))
 
-    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None):
+    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None, stepno=None):
         # Everything is  [T x B x ...]
         n_steps, n_env, *_ = obs.shape
         out = self.emb_obs(obs)
@@ -70,7 +70,7 @@ class SimpleActor(BaseActorModule):
             actions = logits.argmax(dim=-1)
 
         # rnn states, value estimates, and other info
-        return actions, (), dict(value=value, logits=logits)
+        return actions, (), value, dict(logits=logits)
 
 
 class RandomActor(BaseActorModule):
@@ -84,19 +84,19 @@ class RandomActor(BaseActorModule):
 
         self.register_buffer('_counter', torch.zeros(1))
 
-    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None):
+    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None, stepno=None):
         # Everything is [T x B x ...]
         n_steps, n_envs, *_ = fin.shape
 
         # `fin` indicates which of the `act` and `rew` are invalid
-        logits = torch.randn(n_steps, n_envs).log_softmax(dim=-1)
+        logits = torch.randn(n_steps, n_envs, 5).log_softmax(dim=-1)
         value = torch.randn(n_steps, n_envs).fill_(float(self._counter))
 
         actions = torch.tensor([self.action_space.sample()
                                 for _ in range(n_envs)]*n_steps)
 
         # rnn states, value estimates, and other info
-        return actions, (), dict(value=value, logits=logits)
+        return actions, (), value, dict(logits=logits)
 
 
 if __name__ == '__main__':
@@ -152,9 +152,10 @@ if __name__ == '__main__':
     import tqdm
     for j, batch in enumerate(tqdm.tqdm(it)):
         # batch = aliased(batch)
-        actions, hx, info = learner(batch.state.obs, batch.state.act,
-                                    batch.state.rew, batch.state.fin,
-                                    hx=batch.hx)
+        actions, hx, value, info = learner(
+            batch.state.obs, batch.state.act,
+            batch.state.rew, batch.state.fin,
+            hx=batch.hx, stepno=batch.state.stepno)
 
         # crew = np_compute_returns(
         #     batch.npy.state.rew, batch.npy.state.fin,
