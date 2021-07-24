@@ -9,7 +9,7 @@ from copy import deepcopy
 from collections import namedtuple
 
 from ..core import context, tensor_copy_
-from ..utils.plyr import suply, setitem
+from ..utils.plyr import suply, setitem, getitem
 
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 
@@ -56,12 +56,15 @@ def p_evaluate(
         pyt_ = suply(torch.Tensor.to, pyt_, device=device)
 
     try:
+        # unlike `core.evaluate`, this loop only collects the rewards, since
+        #  actor's info may quickly exceed the size limit of `pipe.send`, and
+        #  tensors in shared memory are not resizable.
         while True:
             # collect the evaluation data: let the actor init `hx` for us
             rewards, done, t, hx = [], False, 0, None
             while not done and t < n_steps:
                 # REACT: $(x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
-                act_, hx, value, info_actor = actor.step(*pyt_, hx=hx)
+                act_, hx, info_ = actor.step(*pyt_, hx=hx)
                 tensor_copy_(pyt.act, act_)
 
                 # STEP + EMIT: `.step` through a batch of envs
@@ -72,7 +75,8 @@ def p_evaluate(
                         continue
 
                     # get $(s_t, a_t) \to (s_{t+1}, x_{t+1}, r_{t+1}, d_{t+1})$
-                    obs_, rew_, fin_, info_env = env.step(npy.act[j])
+                    act_ = suply(getitem, npy.act, index=j)
+                    obs_, rew_, fin_, info_env = env.step(act_)
                     npy.stepno[j] += 1
                     if fin_:
                         npy.stepno[j] = 0  # start a new trajectory
@@ -90,27 +94,20 @@ def p_evaluate(
                 # stop only if all environments have been terminated
                 done = numpy.all(npy.fin)
 
-                # track rewards only
                 rewards.append(npy.rew.copy())
                 t += 1
 
-            # compute the bootstrap value $v(x_T)$ (a new `1 x n_envs` tensor)
-            # XXX see `core.evaluate` for details.
-            act_, hx, value, info_actor = actor.step(*pyt_, hx=hx)
-            bootstrap = value.cpu().numpy()
-            numpy.putmask(bootstrap, npy.fin, 0.)
-
-            # update parameters from the shared reference actor
             try:
                 # block until the request and then immediately send the result
                 ctrl.alpha.rx.recv()
-                ctrl.alpha.tx.send((sum(rewards), bootstrap[0],))
+                ctrl.alpha.tx.send(sum(rewards))
 
             # if the request pipe (its write endpoint) is closed, then
             #  this means that the parent process wants us to shut down.
             except EOFError:
                 break
 
+            # update parameters from the shared reference actor
             if actor is not shared:
                 actor.load_state_dict(shared.state_dict(), strict=True)
 

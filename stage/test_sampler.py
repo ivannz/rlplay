@@ -43,7 +43,7 @@ class Actor(BaseActorModule):
             actions = logits.argmax(dim=-1)
 
         # rnn states, value estimates, and other info
-        return actions, hx, value, dict(logits=logits)
+        return actions, hx, dict(value=value, logits=logits)
 
 
 class SimpleActor(BaseActorModule):
@@ -70,7 +70,7 @@ class SimpleActor(BaseActorModule):
             actions = logits.argmax(dim=-1)
 
         # rnn states, value estimates, and other info
-        return actions, (), value, dict(logits=logits)
+        return actions, (), dict(value=value, logits=logits)
 
 
 class RandomActor(BaseActorModule):
@@ -96,7 +96,7 @@ class RandomActor(BaseActorModule):
                                 for _ in range(n_envs)]*n_steps)
 
         # rnn states, value estimates, and other info
-        return actions, (), value, dict(logits=logits)
+        return actions, (), dict(value=value, logits=logits)
 
 
 if __name__ == '__main__':
@@ -152,7 +152,7 @@ if __name__ == '__main__':
     import tqdm
     for j, batch in enumerate(tqdm.tqdm(it)):
         # batch = aliased(batch)
-        actions, hx, value, info = learner(
+        actions, hx, info = learner(
             batch.state.obs, batch.state.act,
             batch.state.rew, batch.state.fin,
             hx=batch.hx, stepno=batch.state.stepno)
