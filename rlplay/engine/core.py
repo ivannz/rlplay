@@ -124,22 +124,22 @@ Fragment.__doc__ += "\n" + r"""
     """
 
 
-def tensor_copy_(dst, src, *, at=None):
+def tensor_copy_(dst, src, *, at=None, _copy=torch.Tensor.copy_):
     """Copy tensor data from the `src` nested object into the `dst` object with
     IDENTICAL structure at the specified index (int, tuple of ints, or slices).
     """
     if at is not None:
         dst = suply(getitem, dst, index=at)
 
-    suply(torch.Tensor.copy_, dst, src)
+    suply(_copy, dst, src)
 
 
-def numpy_copy_(dst, src, *, at=None):
+def numpy_copy_(dst, src, *, at=None, _copy=numpy.copyto):
     """Copy numpy data between nested objects with IDENTICAL structure."""
     if at is not None:
         dst = suply(getitem, dst, index=at)
 
-    suply(numpy.copyto, dst, src, casting='same_kind')
+    suply(_copy, dst, src, casting='same_kind')
 
 
 class BaseActorModule(torch.nn.Module):
@@ -801,16 +801,16 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
     # `original_obs` is the $x_t$ before an automatic reset
     ctx_npy_original_obs = context.npy.original_obs
+    fragment_npy_env = fragment.npy.env
 
     # write the initial recurrent state of the actor to the shared buffer
     tensor_copy_(fragment.pyt.hx, hx)
 
     # allocate on-device context and recurrent state, if device is not `host`
     pyt_ = pyt
-    # XXX even if the device is host, `suply` creates a new nested
-    #  container, which makes the check on L876 always succeed.
     if not on_host:
-        # XXX this also copies data in `pyt` into `pyt_`
+        # XXX `suply` always creates a new nested object and copies data in
+        #  `pyt` into `pyt_`
         pyt_, hx = suply(torch.Tensor.to, (pyt_, hx), device=device)
 
     # after each iteration we construct the state `t+1` from `t`:
@@ -868,7 +868,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
             # gym's api guarantees that `info_env` is a dict
             if info_env:
-                suply(setitem, fragment.npy.env, info_env, index=(t, j))
+                suply(setitem, fragment_npy_env, info_env, index=(t, j))
 
             suply(setitem, ctx_npy_original_obs, obs_, index=j)
 
