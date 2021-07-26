@@ -64,7 +64,7 @@ def p_evaluate(
             rewards, done, t, hx = [], False, 0, None
             while not done and t < n_steps:
                 # REACT: $(x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
-                act_, hx, info_ = actor.step(*pyt_, hx=hx)
+                act_, hx, info_ = actor.step(*pyt_, hx=hx, virtual=False)
                 tensor_copy_(pyt.act, act_)
 
                 # STEP + EMIT: `.step` through a batch of envs

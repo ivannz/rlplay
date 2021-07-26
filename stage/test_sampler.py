@@ -27,7 +27,8 @@ class Actor(BaseActorModule):
         self.baseline = torch.nn.Linear(n_h_dim, 1)
         self.register_buffer('_counter', torch.zeros(1))
 
-    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None, stepno=None):
+    def forward(self, obs, act=None, rew=None, fin=None,
+                *, hx=None, stepno=None, virtual=False):
         # Everything is  [T x B x ...]
         n_steps, n_env, *_ = obs.shape
         input = self.emb_obs(obs)
@@ -56,7 +57,8 @@ class SimpleActor(BaseActorModule):
 
         self.register_buffer('_counter', torch.zeros(1))
 
-    def forward(self, obs, act=None, rew=None, fin=None, *, hx=None, stepno=None):
+    def forward(self, obs, act=None, rew=None, fin=None,
+                *, hx=None, stepno=None, virtual=False):
         # Everything is  [T x B x ...]
         n_steps, n_env, *_ = obs.shape
         out = self.emb_obs(obs)

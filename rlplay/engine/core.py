@@ -161,9 +161,9 @@ class BaseActorModule(torch.nn.Module):
         # make sure that `.step` and `.reset` have the correct signatures
         check_signature(cls.reset, 'self', 'hx', 'at')
         check_signature(
-            cls.step, 'self', 'stepno', 'obs', 'act', 'rew', 'fin', hx=None)
+            cls.step, 'self', 'stepno', 'obs', 'act', 'rew', 'fin',
+            hx=None, virtual=False)
 
-    @torch.no_grad()
     def reset(self, hx, at):
         """Reset the specified pieces of actor's recurrent context `hx`.
 
@@ -198,7 +198,7 @@ class BaseActorModule(torch.nn.Module):
 
         while the GRU layer's `hx` is just a single tensor, not a tuple.
         """
-        assert hx is not None, "Pass `hx=None` to `.step` for initialization."
+        assert hx is not None, 'Pass `hx=None` to `.step` for initialization.'
 
         # make sure to make a copy of the recurrent state
         hx_ = suply(torch.Tensor.clone, hx)
@@ -212,8 +212,7 @@ class BaseActorModule(torch.nn.Module):
         # update $(t, x_t, a_{t-1}, r_t, d_t, h_t) \to (a_t, h_{t+1})$ or not.
         return hx_
 
-    @torch.no_grad()
-    def step(self, stepno, obs, act, rew, fin, /, *, hx):
+    def step(self, stepno, obs, act, rew, fin, /, *, hx, virtual):
         r"""Get the response to the current observed and recurrent state.
 
         Parameters
@@ -261,6 +260,12 @@ class BaseActorModule(torch.nn.Module):
             to the batch size of the rest of the inputs. It is recommended to
             let torch's recurrent layers handle manipulations with `hx`.
 
+        virtual : bool, default=False
+            This flag indicates that the requested interaction is `would-be`
+            or virtual and is not going to be performed in the environment.
+            Used during initialization in `core.prepare` and during the last
+            interaction within each rollout trajectory fragment.
+
         Returns
         -------
         act : nested object with tensor data, shape = (n_seq, n_envs, ...)
@@ -296,7 +301,8 @@ class BaseActorModule(torch.nn.Module):
         The actor MUST NOT update or change the inputs and `hx` in-place,
         and SHOULD return only newly created tensors.
         """
-        return self(obs, act=act, rew=rew, fin=fin, stepno=stepno, hx=hx)
+        return self(obs, act=act, rew=rew, fin=fin, stepno=stepno,
+                    hx=hx, virtual=virtual)
 
 
 @torch.no_grad()
@@ -378,7 +384,7 @@ def prepare(
 
     # make a single pass through the actor with one `1 x n_envs x ...` batch
     pyt = suply(lambda x: x[:1].to(device), state)
-    unused_act, hx, info_actor = actor.step(*pyt, hx=None)
+    unused_act, hx, info_actor = actor.step(*pyt, hx=None, virtual=True)
     # XXX `act_` is expected to have identical structure to `unused_act`
     # XXX `info_actor` must respect the temporal and batch dims
 
@@ -752,9 +758,9 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
       | e | t+2 |  Z'_1     h'_1     A'_2      E'_2     |  s'_2     |
       | n |    ...                                     ...          |
       | t | N-1 |  Z'_{j-1} h'_{j-1} A'_j      E'_j     |  s'_j     |
-      |   |   N |  Z'_j     h'_j                        |           |
-      | p |     |   |        |                          |           |
-      +---+-----+---|--------|--------------------------+-----------+
+      |   |   N |  Z'_j     h'_j     A'_\times          |           |
+      | p |     |   |        |        |                 |           |
+      +---+-----+---|--------|--------X-----------------+-----------+
       |   |     |   V        V                          |           |
       | p |   0 |  Z'_j     h'_j     A'_{j+1}  E'_{j+1} |  s'_{j+1} |
       | + |   1 |  Z'_{j+1} h'_{j+1} A'_{j+2}  E'_{j+2} |  s'_{j+2} |
@@ -767,6 +773,18 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     To summarize
       * `.state[t]` -->> `.state[t+1].act` and `.actor[t]` (afterstate)
       * `.state[t], .state[t+1].act` -->> `.env[t]` and rest of `.state[t+1]`
+
+    Note that the environment is not interacted with at the N-th step, which
+    is indicated by `cloning` the environment's state in prior tables. In
+    contrast the actor's would-be reaction $A'_\times$ to $Z'_j$ and $h'_j$ is
+    requested and recorded into `.actor[N]` of the p-th fragment, but is NOT
+    copied into the (p+1)-st fragment, and instead recomputed anew at its
+    zero-th interaction. Similarly, we ignore the updated recurrent state
+    $h'_{j+1}$ after the N-th step and postpone it until the next fragment.
+
+    This wastefulness comes from the possibility of the actor's parameters
+    being updated between consecutive trajectory fragments within the same
+    batch of environments.
     """
     device = torch.device('cpu') if device is None else device
     # assert isinstance(device, torch.device)
@@ -807,21 +825,22 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     #  $r_t$ and $x_{t+1}$, whenever `out.fin[t+1]` ($d_{t+1}$) is `False`
     #  These methods also ignore the Q-value at $x_{t+1}$, if $s_{t+1}$ is
     #  terminal, i.e. $d_{t+1}=\top$, and $x_{t+1}=x_*$.
-    for t in range(len(out.fin)):  # `fin` is (1 + T) x B
+    n_steps = len(out.fin) - 1
+    for t in range(1 + n_steps):  # `fin` is (1 + T) x B
         # copy the state $(t, x_t, a_{t-1}, r_t, d_t)$ from `ctx` to `out[t]`
         suply(setitem, out, npy, index=t)
         # XXX apparently, torch copies host-resident data slower than numpy
 
         # REACT: $(a_t, h_{t+1})$ are actor's reaction to `.state[t]` and `hx`,
         #  i.e. $(t, x_t, a_{t-1}, r_t, d_t)$, and $h_t$, respectively.
-        act_, hx_, info_actor = actor.step(*pyt_, hx=hx)
+        act_, hx_, info_actor = actor.step(*pyt_, hx=hx, virtual=t >= n_steps)
         # XXX The actor SHOULD respect time and batch dims of the inputs,
         #  except `hx`, but SHOULD NOT change or update anything in-place.
 
         # `.actor[t] <<-- info`. `fragment.pyt` likely has `is_shared()`,
         #  so it cannot be in the pinned memory.
         tensor_copy_(fragment.pyt.actor, info_actor, at=slice(t, t + 1))
-        if t >= len(out.fin) - 1:
+        if t >= n_steps:
             # the T-th REACT interaction within the current trajectory fragment
             #  is used for lookahead only (bootstrap value estimate).
             break
@@ -967,7 +986,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     rewards, info_actor, done, t, hx = [], [], False, 0, None
     while not done and t < n_steps and fn_render():
         # REACT: $(t, x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
-        act_, hx, info_ = actor.step(*pyt_, hx=hx)
+        act_, hx, info_ = actor.step(*pyt_, hx=hx, virtual=False)
 
         info_actor.append(suply(torch.Tensor.cpu, info_))
 
@@ -1005,7 +1024,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
         t += 1
 
     # the virtual lookahead step
-    _, _, info_ = actor.step(*pyt_, hx=hx)
+    _, _, info_ = actor.step(*pyt_, hx=hx, virtual=True)
     info_actor.append(suply(torch.Tensor.cpu, info_))
 
     # return the collected afterstate data in numpy arrays
