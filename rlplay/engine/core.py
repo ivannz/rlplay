@@ -583,19 +583,24 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     $t$, and $x_t$ and $r_t$ be the observation and the reward emitted by the
     env's recent transition
 
-        $(s_{t-1}, a_{t-1}) \to (s_t, x_t, r_t, d_t, E_t)$,
+        $(s_{t-1}, a_{t-1}) \longrightarrow (s_t, x_t, r_t, d_t, E_t)$,
 
     with $d_t$ indicating if $s_t$ is terminal and $E_t$ is the environment's
     extra info. The next action $a_t$ is taken at in response to the current
     reward $r_t$ and observation $x_t$, the last action $a_{t-1}$ and actor's
     current recurrent state $h_t$:
+    $$
+        \underbrace{
+            (t, x_t, a_{t-1}, r_t, d_t, h_t)
+        }_{z_t}  % actionable state
+            \longrightarrow (a_t, h_{t+1}, A_t)
+        \,, $$
 
-        $(t, x_t, a_{t-1}, r_t, d_t, h_t) \to (a_t, h_{t+1}, A_{t+1})$,
+    with $z_t$ being the actor's actionable state, and $A_t$ -- its afterstate
+    info, computed on the history up to and including $t$ and related to
+    the composite `actor-env` transition
 
-    with $A_{t+1}$ being the actors's afterstate info computed on the history
-    up to and including $t$ and related to the composite `actor-env` transition
-
-        $s_t \longrightarrow a_t \longrightarrow s_{t+1}$.
+        $z_t \longrightarrow a_t \longrightarrow s_{t+1}$.
 
     Let $(s_*, x_*)$ be the environment's true state and the observation just
     after a reset.
@@ -643,7 +648,8 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
     This data is collected by stepping through the actor and the environment in
     lockstep and recording it into the `fragment` rollout buffer, while keeping
-    `context` properly synchronised. The transitions (simplified)
+    `context` properly synchronised. The time advances after env's `.step`:
+    the transitions (simplified)
 
         $(s_t, a_t) \to s_{t+1}$
 
@@ -751,36 +757,37 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
       |   |  #  |  .state   .hx  ->  .actor -> .env     | actual    |
       +---+-----+---------------------------------------+-----------+
       | f |     |                                       |           |
-      | r |   0 |  Z_k      h_k      A_{k+1}   E_{k+1}  |  s_{k+1}  |
+      | r |   0 |  Z_k      h_k      A_k       E_{k+1}  |  s_{k+1}  |
       | a |    ...                                     ...          |
-      | g |   t |  Z_t      h_t      A_{t+1}   E_{t+1}  |  s'_*   <<-- reset
-      | m | t+1 |  Z'_0     h'_*     A'_1      E'_1     |  s'_1     |
-      | e | t+2 |  Z'_1     h'_1     A'_2      E'_2     |  s'_2     |
+      | g |   t |  Z_t      h_t      A_t       E_{t+1}  |  s'_*   <<-- reset
+      | m | t+1 |  Z'_0     h'_*     A'_0      E'_1     |  s'_1     |
+      | e | t+2 |  Z'_1     h'_1     A'_1      E'_2     |  s'_2     |
       | n |    ...                                     ...          |
-      | t | N-1 |  Z'_{j-1} h'_{j-1} A'_j      E'_j     |  s'_j     |
+      | t | N-1 |  Z'_{j-1} h'_{j-1} A'_{j-1}  E'_j     |  s'_j     |
       |   |   N |  Z'_j     h'_j     A'_\times          |           |
       | p |     |   |        |        |                 |           |
       +---+-----+---|--------|--------X-----------------+-----------+
       |   |     |   V        V                          |           |
-      | p |   0 |  Z'_j     h'_j     A'_{j+1}  E'_{j+1} |  s'_{j+1} |
-      | + |   1 |  Z'_{j+1} h'_{j+1} A'_{j+2}  E'_{j+2} |  s'_{j+2} |
+      | p |   0 |  Z'_j     h'_j     A'_j      E'_{j+1} |  s'_{j+1} |
+      | + |   1 |  Z'_{j+1} h'_{j+1} A'_{j+1}  E'_{j+2} |  s'_{j+2} |
       | 1 |    ...                                     ...          |
       |   |     |                                       |           |
       +---+-----+---------------------------------------+-----------+
 
     (the evolution of `.hx` is not recorded, only its initial value $h_k$)
 
-    To summarize
-      * `.state[t]` -->> `.state[t+1].act` and `.actor[t]` (afterstate)
-      * `.state[t], .state[t+1].act` -->> `.env[t]` and rest of `.state[t+1]`
+    To summarize (`Z = .state`)
+      * `Z[t], hx` -->> `Z[t+1].act`, `hx`, `.actor[t]` (afterstate)
+      * `Z[t], Z[t+1].act` -->> `.env[t]` and rest of `Z[t+1]`
 
     Note that the environment is not interacted with at the N-th step, which
     is indicated by `cloning` the environment's state in prior tables. In
     contrast the actor's would-be reaction $A'_\times$ to $Z'_j$ and $h'_j$ is
     requested and recorded into `.actor[N]` of the p-th fragment, but is NOT
     copied into the (p+1)-st fragment, and instead recomputed anew at its
-    zero-th interaction. Similarly, we ignore the updated recurrent state
-    $h'_{j+1}$ after the N-th step and postpone it until the next fragment.
+    zero-th interaction,  $A'_j$. Similarly, we ignore the updated recurrent
+    state $h'_{j+1}$ after the N-th step and postpone it until the next
+    fragment.
 
     This wastefulness comes from the possibility of the actor's parameters
     being updated between consecutive trajectory fragments within the same
