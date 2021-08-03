@@ -392,9 +392,9 @@ def prepare(
     hx = torchify(suply(torch.Tensor.cpu, hx), shared=shared, pinned=pinned)
 
     # get one time slice from the actor's info `n_envs x ...` and expand into
-    #  an `n_steps x n_envs x ...` structured buffer
+    #  an `(1 + n_steps) x n_envs x ...` structured buffer
     info_actor = torchify(suply(lambda x: x[0].cpu(), info_actor),
-                          n_steps, shared=shared, pinned=pinned)
+                          1 + n_steps, shared=shared, pinned=pinned)
 
     # bundle the buffers into a trajectory fragment
     return Fragment(state=state, actor=info_actor, env=info_env, hx=hx)
