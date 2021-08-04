@@ -1013,9 +1013,6 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
             if fin_:
                 npy.stepno[j] = 0  # start a new trajectory
 
-            if info_env:
-                suply(setitem, npy.env, info_env, index=j)
-
             # update the j-th env's '$x_{t+1}, r_{t+1}, d_{t+1}$ in `ctx`
             suply(setitem, npy.obs, obs_, index=j)
             npy.rew[j], npy.fin[j] = rew_, fin_
