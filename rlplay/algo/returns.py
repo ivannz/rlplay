@@ -160,6 +160,8 @@ def pyt_returns(rew, fin, *, gamma, bootstrap=0., omega=None, r_bar=None):
 
         G_t = r_{t+1} + \gamma \rho_t G_{t+1} 1_{\neg d_{t+1}}
     """
+    bootstrap = torch.as_tensor(bootstrap)
+
     # v(s_t) ~ G_t = r_{t+1} + \gamma G_{t+1} 1_{\neg d_{t+1}}
     # r_{t+1}, s_{t+1} \sim p(r, s, \mid s_t, a_t), a_t \sim \pi(a \mid s_t)
     # d_{t+1} indicates if $s_{t+1}$ is terminal
@@ -192,6 +194,8 @@ def pyt_deltas(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar=None):
         \delta_t = r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t)
         # \delta^v_s = 0 for all s \geq t if d_t = \top
     """
+    bootstrap = torch.as_tensor(bootstrap)
+
     # a_hat[t] = val[t+1]
     a_hat = torch.empty_like(rew).copy_(bootstrap)
     a_hat[:-1].copy_(val[1:])
@@ -209,6 +213,7 @@ def pyt_deltas(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar=None):
 @torch.no_grad()
 def pyt_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
     n_steps, *shape = rew.shape
+    bootstrap = torch.as_tensor(bootstrap)
 
     gae_t, delta = rew.new_zeros((1 + n_steps, *shape)), rew.new_zeros(shape)
     # rew[t], fin[t], val[t] is r_{t+1}, d_{t+1} and v(s_t)
@@ -232,6 +237,7 @@ def pyt_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
 def pyt_vtrace(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar, c_bar):
     # raise NotImplementedError
     n_steps, *shape = rew.shape
+    bootstrap = torch.as_tensor(bootstrap)
 
     # \rho_t = \min\{ \bar{\rho},  \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
     rho = omega.exp().clamp_(max=r_bar or float('+inf'))
