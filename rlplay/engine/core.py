@@ -513,6 +513,10 @@ def context(*envs, pinned=False):
 
         See docs of `startup` for details of `ctx` aliasing.
 
+    env : aliased nested object with tensor data, shape = (1, batch, ...)
+        The extra data received from the batch of environments' `.step` upon
+        actually TAKING the actions $a_t$ in them.
+
     Details
     -------
     This is a version of `startup()`, specialized for actor-less context
@@ -526,7 +530,10 @@ def context(*envs, pinned=False):
     # prepare the running context from data some environment, which is reset.
     obs_ = env.reset()
     act_ = env.action_space.sample()
-    _, rew_, fin_, _ = env.step(act_)
+    _, rew_, fin_, info_ = env.step(act_)
+
+    # the buffer for the aux env info data is `1 x n_envs x ...`
+    info_ = aliased(torchify(info_, 1, len(envs), pinned=pinned, copy=True))
 
     # ensure correct data types for `rew_` (to float32) and `fin_` (to bool)
     state_ = State(numpy.int64(0), obs_, act_, numpy.float32(rew_), bool(fin_))
@@ -543,7 +550,7 @@ def context(*envs, pinned=False):
     for j, env in enumerate(envs):
         suply(setitem, state.npy.obs, env.reset(), index=j)  # x_0 = s_*
 
-    return state
+    return state, info_
 
 
 @torch.no_grad()
@@ -974,7 +981,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
     pinned, on_host = device.type == 'cuda', device.type == 'cpu'
 
     # prepare a running context for the specified number of envs
-    ctx = context(*envs, pinned=pinned)
+    ctx, info_env = context(*envs, pinned=pinned)
     # `ctx` is $x_*, a_{-1}, r_0, \top, h_0$, where `r_0` is undefined
 
     # fast access to context's aliases

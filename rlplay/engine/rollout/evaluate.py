@@ -43,7 +43,7 @@ def p_evaluate(
     envs = [factory() for _ in range(n_envs)]
 
     # prepare an aliased running context for the specified number of envs
-    ctx = context(*envs, pinned=pinned)
+    ctx, info_env = context(*envs, pinned=pinned)
     # `ctx` is $x_*, a_{-1}, r_0, \top, h_0$, where `r_0` is undefined
 
     # fast access to context's aliases
