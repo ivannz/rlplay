@@ -372,6 +372,7 @@ def prepare(
     # while leaving `obs_` and `act_` intact as thery are nested containers of
     # numpy arrays or scalars with environment's proper dtypes.
     rew_, fin_, stepno_ = numpy.float32(rew_), bool(fin_), numpy.int64(0)
+    # XXX `numpy.float32` inadvertently allows vector rewards
 
     # the buffer for the aux env info data is `n_steps x n_envs x ...`
     info_env = torchify(info_env, n_steps, n_envs,

@@ -12,12 +12,17 @@ def npy_returns(rew, fin, *, gamma, bootstrap=0., omega=None, r_bar=None):
             = \sum_{j\geq t} r_{j+1} \gamma^{j-t} \prod_{s=t+1}^j \omega_s
             = r_{t+1} + \gamma \omega_{t+1} G_{t+1}
     """
-    if omega is not None:
-        # \rho_t = \min\{ \bar{\rho}, \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
-        rho = numpy.minimum(numpy.exp(omega), r_bar or float('+inf'))
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
 
     n_steps, *shape = rew.shape
     G_t = numpy.zeros((1 + n_steps, *shape), dtype=rew[-1].dtype)
+
+    if omega is not None:
+        # \rho_t = \min\{ \bar{\rho}, \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
+        rho = numpy.minimum(numpy.exp(omega), r_bar or float('+inf'))
+        rho = rho.reshape(*rho.shape, *trailing)
 
     # rew[t], fin[t] is r_{t+1} and d_{t+1}
     G_t[-1] = bootstrap
@@ -39,6 +44,10 @@ def npy_deltas(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar=None):
         \delta_t = r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t)
         # \delta^v_s = 0 for all s \geq t if d_t = \top
     """
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
+
     n_steps, *shape = rew.shape
 
     a_hat = numpy.zeros_like(rew)
@@ -46,7 +55,7 @@ def npy_deltas(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar=None):
     a_hat[:-1] = val[1:]
 
     # \delta_t = r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t)
-    numpy.putmask(a_hat, fin, 0.)
+    numpy.copyto(a_hat, 0., where=fin)  # `.putmask` is weird with broadcasting
     a_hat *= gamma
     a_hat += rew
     a_hat -= val
@@ -54,7 +63,8 @@ def npy_deltas(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar=None):
     if omega is not None:
         # \rho_t = \min\{ \bar{\rho}, \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
         rho = numpy.minimum(numpy.exp(omega), r_bar or float('+inf'))
-        a_hat *= rho
+        a_hat *= rho.reshape(*rho.shape, *trailing)
+
     return a_hat
 
 
@@ -67,6 +77,10 @@ def npy_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
               + (\gamma \lambda)^2 \delta^v_{t+2} + ...
             = \delta^v_t + \gamma \lambda A_{t+1} 1_{\neg d_{t+1}}
     """
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
+
     n_steps, *shape = rew.shape
 
     gae_t = numpy.zeros((1 + n_steps, *shape), dtype=rew[-1].dtype)
@@ -124,6 +138,10 @@ def npy_vtrace(rew, fin, val, omega, *, gamma, r_bar, c_bar, bootstrap=0.):
             = \rho_t \delta^v_t
             + \gamma c_t \hat{a}_{t+1} 1_{\neg d_{t+1}}
     """
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
+
     # clamp(max=a) is the same is min(..., a)
     rho = numpy.minimum(numpy.exp(omega), r_bar or float('+inf'))
     see = numpy.minimum(numpy.exp(omega), c_bar or float('+inf'))
@@ -136,6 +154,8 @@ def npy_vtrace(rew, fin, val, omega, *, gamma, r_bar, c_bar, bootstrap=0.):
 
     # rew[t], fin[t], val[t] is r_{t+1}, d_{t+1} and v(s_t)
     # t is -j, t+1 is -j-1 (j=1..T)
+    rho = rho.reshape(*rho.shape, *trailing)
+    see = see.reshape(*see.shape, *trailing)
     for j in range(1, n_steps + 1):
         # \rho_t \bigl( r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t) \bigr)
         numpy.multiply(bootstrap, gamma, out=delta, where=~fin[-j])
@@ -160,6 +180,10 @@ def pyt_returns(rew, fin, *, gamma, bootstrap=0., omega=None, r_bar=None):
 
         G_t = r_{t+1} + \gamma \rho_t G_{t+1} 1_{\neg d_{t+1}}
     """
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
+
     bootstrap = torch.as_tensor(bootstrap)
 
     # v(s_t) ~ G_t = r_{t+1} + \gamma G_{t+1} 1_{\neg d_{t+1}}
@@ -168,6 +192,7 @@ def pyt_returns(rew, fin, *, gamma, bootstrap=0., omega=None, r_bar=None):
     if omega is not None:
         # \rho_t = \min\{ \bar{\rho}, \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
         rho = omega.exp().clamp_(max=r_bar or float('+inf'))
+        rho = rho.reshape(*rho.shape, *trailing)
 
     n_steps, *shape = rew.shape
     G_t = rew.new_zeros((1 + n_steps, *shape))
@@ -194,6 +219,10 @@ def pyt_deltas(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar=None):
         \delta_t = r_{t+1} + \gamma v(s_{t+1}) 1_{\neg d_{t+1}} - v(s_t)
         # \delta^v_s = 0 for all s \geq t if d_t = \top
     """
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
+
     bootstrap = torch.as_tensor(bootstrap)
 
     # a_hat[t] = val[t+1]
@@ -207,11 +236,15 @@ def pyt_deltas(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar=None):
 
     # \rho_t = \min\{ \bar{\rho}, \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
     rho = omega.exp().clamp_(max=r_bar or float('+inf'))
-    return a_hat.mul_(rho)
+    return a_hat.mul_(rho.reshape(*rho.shape, *trailing))
 
 
 @torch.no_grad()
 def pyt_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
+
     n_steps, *shape = rew.shape
     bootstrap = torch.as_tensor(bootstrap)
 
@@ -235,15 +268,21 @@ def pyt_gae(rew, fin, val, *, gamma, C, bootstrap=0.):
 
 @torch.no_grad()
 def pyt_vtrace(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar, c_bar):
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
+
     # raise NotImplementedError
     n_steps, *shape = rew.shape
     bootstrap = torch.as_tensor(bootstrap)
 
     # \rho_t = \min\{ \bar{\rho},  \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
     rho = omega.exp().clamp_(max=r_bar or float('+inf'))
+    rho = rho.reshape(*rho.shape, *trailing)
 
     # c_t = \min\{ \bar{c},  \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
     see = omega.exp().clamp_(max=c_bar or float('+inf'))
+    see = see.reshape(*see.shape, *trailing)
 
     a_hat, delta = rew.new_zeros((1 + n_steps, *shape)), rew.new_zeros(shape)
     # rew[t], fin[t], val[t] is r_{t+1}, d_{t+1} and v(s_t)
