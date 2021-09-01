@@ -41,8 +41,8 @@ class CloudpickleSpawner:
     def __init__(self, cls, *args, **kwargs):
         self.cls, self.args, self.kwargs = cls, args, kwargs
 
-    def __call__(self):
-        return self.cls(*self.args, **self.kwargs)
+    def __call__(self, *args, **kwargs):
+        return self.cls(*args, *self.args, **kwargs, **self.kwargs)
 
     def __getstate__(self):
         return cloudpickle.dumps(self.__dict__)
