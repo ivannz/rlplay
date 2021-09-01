@@ -25,12 +25,16 @@ def check_dims(first, second=None, *, kind=(float, int), positive=True):
 def make_grid(tensor, *, aspect=(16, 9), pixel=(1, 1), pad=(0, 0), normalize=True):
     """Another version of `torchvision.utils.make_grid`"""
 
+    # the tensor is either grayscale or rgb
+    assert tensor.dim() in (3, 4)
+
+    # add grayscale dim
+    if tensor.dim() == 3:
+        tensor = tensor.unsqueeze(3)
+
     # validate aspec and pixel scaling
     aspect, pixel = check_dims(aspect, 1), check_dims(pixel, kind=int)
     pad = check_dims(pad, kind=int, positive=False)
-
-    # the tensor is either grayscale or rgb
-    assert tensor.dim() in (3, 4)
 
     # compute the range of values and optionally pad each image
     lo, hi, r = float(tensor.min()), float(tensor.max()), 1e-1
@@ -39,13 +43,12 @@ def make_grid(tensor, *, aspect=(16, 9), pixel=(1, 1), pad=(0, 0), normalize=Tru
     # pad the input tensors, to make geometry eqn simpler
     ph, pw = pad
     if ph > 0 or pw > 0:
-        padding = [ph, ph, pw, pw]
-        if tensor.dim() == 4:
-            padding.extend((0, 0))
+        padding = [ph, ph, pw, pw] + [(0, 0)] * (tensor.dim() - 3)
         tensor = F.pad(tensor, pad=padding, value=hi)
 
+    # add fake pixel-size dims
     n_images, height, width, *color = tensor.shape
-    color = (1,) if not color else color
+    tensor = tensor.reshape(n_images, height, width, 1, 1, *color)
 
     # compute the geometry of the canvas: aspect = width : height
     (aw, ah), (pw, ph) = aspect, pixel
@@ -66,11 +69,11 @@ def make_grid(tensor, *, aspect=(16, 9), pixel=(1, 1), pad=(0, 0), normalize=Tru
     canvas = canvas.swapaxes(1, 2)
     # `canvas` is R x C x H x W x [ph x pw x k]
 
-    canvas = canvas.reshape(n_row * n_col, height, width, -1)
-    # `canvas` is [R x C] x H x W x [ph x pw x k]
+    canvas = canvas.reshape(n_row * n_col, height, width, ph, pw, *color)
+    # `canvas` is [R x C] x H x W x ph x pw x k
 
     # copy_ transparently moves from a device to host
-    canvas[:n_images].copy_(tensor.unsqueeze(3))  # fake pixel dim
+    canvas[:n_images].copy_(tensor)
 
     canvas = canvas.reshape(n_row, n_col, height, width, ph, pw, *color)
     # `canvas` is R x C x H x W x ph x pw x k
