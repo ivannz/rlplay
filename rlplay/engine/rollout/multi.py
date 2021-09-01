@@ -1,6 +1,8 @@
 import torch
 import numpy
 
+from numpy.random import SeedSequence
+
 from copy import deepcopy
 from collections import namedtuple
 
@@ -12,13 +14,14 @@ from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.multiprocessing import start_processes
 from ..utils.plyr import suply, tuply, getitem
 from ..utils.shared import Aliased, numpify, torchify
+from ..utils import check_signature
 
 
 Control = namedtuple('Control', ['reflock', 'empty', 'ready'])
 
 
 def p_stepper(
-    rk, ws, ctrl, factory, buffers, shared,
+    rk, ws, ss, ctrl, factory, buffers, shared,
     clone=True, sticky=False, close=True, affinity=None
 ):
     r"""Trajectory fragment collection subprocess.
@@ -59,7 +62,10 @@ def p_stepper(
 
     # prepare local envs and the associated local env-state runtime context
     n_envs = buffers[ix].state.fin.shape[1]  # `fin` is always T x B
-    envs = [factory() for _ in range(n_envs)]  # XXX seed?
+
+    env_seeds = ss[rk].spawn(n_envs)  # spawn grandchild seeds
+    envs = [factory(seed=seed) for seed in env_seeds]
+
     ctx, fragment = startup(envs, actor, buffers[ix], pinned=pinned)
     # XXX buffers are interchangeable vessels for data, whereas runtime
     # context is not synchronised to envs and the actor of this worker.
@@ -105,8 +111,10 @@ def rollout(
     n_buffers=16,
     n_per_batch=4,
     *, sticky=False, pinned=False, close=False, clone=True, device=None,
-    start_method=None, timeout=10, affinity=None
+    start_method=None, timeout=10, affinity=None, entropy=None
 ):
+    check_signature(factory, seed=None)
+
     # the device to put the batches onto
     device = torch.device('cpu') if device is None else device
 
@@ -119,7 +127,7 @@ def rollout(
     mp = get_context(start_method)
 
     # initialize a reference buffer and make its shared copies
-    env = factory()  # XXX seed=None here since used only once
+    env = factory(seed=None)  # XXX seed=None here since used only once
 
     # create a host-resident copy of the module in shared memory, which
     #  serves as a vessel for updating the actors in workers
@@ -158,13 +166,17 @@ def rollout(
     for index, _ in enumerate(buffers):
         ctrl.empty.put(index)
 
+    # prepare the a seed sequence for each worker
+    ss = SeedSequence(entropy=entropy)
+    worker_ss = ss.spawn(n_actors)
+
     # spawn worker subprocesses (nprocs is world size)
     p_workers = start_processes(
         p_stepper, start_method=mp._name, daemon=False, nprocs=n_actors,
         # collectors' device may be other than the main device
         join=False, args=(
-            n_actors, ctrl, CloudpickleSpawner(factory), buffers, shared,
-            clone, sticky, close, affinity
+            n_actors, worker_ss, ctrl, CloudpickleSpawner(factory), buffers,
+            shared, clone, sticky, close, affinity
         ))
 
     # fetch for ready trajectory fragments and collate them into a batch

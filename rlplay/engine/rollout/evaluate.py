@@ -4,12 +4,14 @@ import signal
 
 import torch
 import numpy
+from numpy.random import SeedSequence
 
 from copy import deepcopy
 from collections import namedtuple
 
 from ..core import context, tensor_copy_
 from ..utils.plyr import suply, setitem, getitem
+from ..utils import check_signature
 
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 
@@ -19,7 +21,7 @@ Endpoint = namedtuple('Endpoint', ['rx', 'tx'])
 
 
 def p_evaluate(
-    ctrl, factory, shared, n_envs, n_steps,
+    ss, ctrl, factory, shared, n_envs, n_steps,
     *, clone=True, close=False, device=None
 ):
     ctrl.omega.tx.close()
@@ -39,8 +41,10 @@ def p_evaluate(
         actor = deepcopy(shared).to(device)
 
     # spawn a batch of environments
+    env_seeds = ss.spawn(n_envs)  # spawn child seeds
+
     # prepare local envs and the associated local env-state runtime context
-    envs = [factory() for _ in range(n_envs)]
+    envs = [factory(seed=seed) for seed in env_seeds]
 
     # prepare an aliased running context for the specified number of envs
     ctx, info_env = context(*envs, pinned=pinned)
@@ -130,8 +134,9 @@ def p_evaluate(
 def evaluate(
     factory, actor, n_envs, n_steps=None,
     *, clone=True, close=False, device=None,
-    start_method=None
+    start_method=None, entropy=None
 ):
+    check_signature(factory, seed=None)
 
     n_steps = n_steps or float('+inf')
 
@@ -160,9 +165,14 @@ def evaluate(
     #     the worker to receive signals and yield results, respectively;
     ctrl = Control(Endpoint(tu_rx, ut_tx), Endpoint(ut_rx, tu_tx),
                    mp.SimpleQueue())
+
+    # prepare the seed sequence for the wroker
+    ss = SeedSequence(entropy)
+
+    # spawn a single worker subprocess
     p_worker = mp.Process(
         target=p_evaluate, daemon=False,
-        args=(Control(ctrl.omega, ctrl.alpha, ctrl.error),
+        args=(ss, Control(ctrl.omega, ctrl.alpha, ctrl.error),
               CloudpickleSpawner(factory), shared, n_envs, n_steps),
         kwargs=dict(clone=clone, close=close, device=device),
     )

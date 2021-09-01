@@ -6,6 +6,7 @@ from threading import BrokenBarrierError
 
 import torch
 import numpy
+from numpy.random import SeedSequence
 
 from copy import deepcopy
 from collections import namedtuple
@@ -15,13 +16,14 @@ from ..core import prepare, startup, collect
 from ..utils.plyr import suply
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.shared import Aliased, numpify, torchify
+from ..utils import check_signature
 
 
 Control = namedtuple('Control', ['reflock', 'barrier', 'error'])
 
 
 def p_double(
-    ctrl, factory, buffers, shared,
+    ss, ctrl, factory, buffers, shared,
     *, clone=True, sticky=False, close=False, device=None
 ):
     # always pin the runtime context if the device is 'cuda'
@@ -39,7 +41,10 @@ def p_double(
 
     # prepare local envs and the associated local env-state runtime context
     n_envs = buffers[0].state.fin.shape[1]  # `fin` is always T x B
-    envs = [factory() for _ in range(n_envs)]  # XXX seed?
+
+    env_seeds = ss.spawn(n_envs)  # spawn child seeds
+    envs = [factory(seed=seed) for seed in env_seeds]
+
     ctx, fragment0 = startup(envs, actor, buffers[0], pinned=pinned)
     # XXX buffers are interchangeable vessels for data, whereas runtime
     # context is not synchronised to envs and the actor of this worker.
@@ -91,7 +96,7 @@ def p_double(
 def rollout(
     factory, actor, n_steps, n_envs,
     *, sticky=False, close=False, clone=True, device=None,
-    start_method=None, affinity=None
+    start_method=None, affinity=None, entropy=None
 ):
     r"""UPDATE THE DOC
 
@@ -158,6 +163,8 @@ def rollout(
         |    ...      ...    |           |    ...      ...    |
 
     """
+    check_signature(factory, seed=None)
+
     # the device to put the batches onto
     device = torch.device('cpu') if device is None else device
 
@@ -171,7 +178,7 @@ def rollout(
     mp = get_context(start_method)
 
     # initialize a reference buffer and make its shared copies
-    env = factory()  # XXX seed=None here since used only once
+    env = factory(seed=None)  # XXX seed=None here since used only once
 
     # create a host-resident copy of the module in shared memory, which
     #  serves as a vessel for updating the actors in workers
@@ -191,9 +198,14 @@ def rollout(
 
     # the sync barrier and actor update lock
     ctrl = Control(mp.Lock(), mp.Barrier(2), mp.SimpleQueue())
+
+    # prepare the seed sequence for the wroker
+    ss = SeedSequence(entropy)
+
+    # spawn the lone worker subprocess
     p_worker = mp.Process(
         target=p_double, daemon=False,
-        args=(ctrl, CloudpickleSpawner(factory), double, shared),
+        args=(ss, ctrl, CloudpickleSpawner(factory), double, shared),
         kwargs=dict(clone=clone, sticky=sticky, close=close, device=affinity),
     )
     p_worker.start()
