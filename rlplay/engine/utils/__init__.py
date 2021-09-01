@@ -2,6 +2,7 @@ from .plyr import suply, tuply, setitem, getitem
 from .shared import aliased, torchify, numpify
 
 from inspect import signature
+from functools import partial
 
 
 def check_signature(fn, /, *args, **kwargs):
@@ -17,6 +18,9 @@ def check_signature(fn, /, *args, **kwargs):
     }
 
     if not order.keys() >= set(arguments):
+        while isinstance(fn, partial):
+            fn = fn.func  # unwrap the partial object
+
         raise RuntimeError(f'Bad signature `{order}` in `{fn.__name__}`. '
                            f'Must include `{arguments}`.')
 
