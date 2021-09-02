@@ -342,6 +342,12 @@ class ImageViewer(Window):
         flat = np.frombuffer(buf, dtype=np.uint8)
         return flat.reshape(height, width, n_channels)[::-1].copy()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
 
 class MultiViewer:
     """A managed collection of image viewers.
@@ -470,6 +476,12 @@ class MultiViewer:
     def __contains__(self, label):
         """Get the window of the specified viewer."""
         return label in self.viewers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
 
 if __name__ == '__main__':
