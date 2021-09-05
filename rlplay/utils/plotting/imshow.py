@@ -348,6 +348,10 @@ class ImageViewer(Window):
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
+    @property
+    def window(self):
+        return self
+
 
 class MultiViewer:
     """A managed collection of image viewers.
