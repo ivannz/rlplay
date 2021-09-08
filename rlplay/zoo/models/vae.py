@@ -9,6 +9,10 @@ import torch.distributions as dist
 from torch.distributions.utils import broadcast_all
 from torch.autograd import Function
 
+# for vq-vae
+from typing import Tuple
+import torch.nn.functional as F
+
 
 # My own stable implementation of differentiable Continuous Bernoulli distribution.
 # See details in ~/Github/general-scribbles/coding/vq-VAE.ipynb
@@ -435,3 +439,121 @@ class AsIndependentContinuousBernoulli(AsIndependentBernoulli):
     def as_distribution(self, logits):
         cb = ContinuousBernoulli(logits=logits, validate_args=self.validate_args)
         return Independent(cb, self.n_dim_out)
+
+
+class VQEmbedding(torch.nn.Embedding):
+    r"""Vector-quantized mebedding layer.
+
+    Note
+    ----
+    My own implementation taken from
+        ~/Github/general-scribbles/coding/vq-VAE.ipynb
+
+    Details
+    -------
+    The key idea of the [vq-VAE](https://arxiv.org/abs/1711.00937) is how
+    to train the nearest-neighbour-based quantization embeddings and how
+    the gradients are to be backpropped through them:
+
+    $$
+    \operatorname{vq}(z; e)
+        = \sum_k e_k 1_{R_k}(z)
+        \,,
+        \partial_z \operatorname{vq}(z; e) = \operatorname{id}
+        \,. $$
+
+    This corresponds to a degenerate conditional categorical rv
+    $k^\ast_z$ with distribution $
+        p(k^\ast_z = j\mid z)
+            = 1_{R_j}(z)
+    $ where
+
+    $$
+    R_j = \bigl\{
+        z\colon
+            \|z - e_j\|_2 < \min_{k\neq j} \|z - e_k\|_2
+        \bigr\}
+    \,, $$
+
+    are the cluster affinity regions w.r.t. $\|\cdot \|_2$ norm. Note that we
+    can compute
+
+    $$
+    k^\ast_z
+        := \arg \min_k \frac12 \bigl\| z - e_k \bigr\|_2^2
+        = \arg \min_k
+            \frac12 \| e_k \|_2^2
+            - \langle z, e_k \rangle
+        \,. $$
+
+    The authors propose STE for grads and mutual consistency losses for
+    the embeddings:
+    * $\| \operatorname{sg}(z) - e_{k^\ast_z} \|_2^2$ -- forces the embeddings
+    to match the latent cluster's centroid (recall the $k$-means algo)
+      * **NB** in the paper they use just $e$, but in the latest code they use
+      the selected embeddings
+      * maybe we should compute the cluster sizes and update to the proper
+      centroid $
+          e_j = \frac1{
+              \lvert {i: k^\ast_{z_i} = j} \rvert
+          } \sum_{i: k^\ast_{z_i} = j} z_i
+      $.
+    * $\| z - \operatorname{sg}(e_{k^\ast_z}) \|_2^2$ -- forces the encoder
+    to produce the latents, which are consistent with the cluster they are
+    assigned to.
+    """
+    @torch.no_grad()
+    def lookup(self, input: torch.Tensor):
+        """Lookup the index of the nearest embedding."""
+        # batch x n_dim x *spatial
+        _, n_dim, *spatial = input.shape
+
+        # n_embedings x n_dim
+        x = self.weight
+        sqr = (x * x).sum(dim=1).reshape(1, -1, *[1] * len(spatial))
+        cov = torch.einsum('bd..., nd -> bn...', input, x)
+        inx = torch.argmin(sqr - 2 * cov, dim=1)
+        # no need to compute the norm fully since we do not backprop
+        #  through the input when doing clustering here.
+
+        # compute the perplexity
+        # x -- input, y -- target: get `- \sum_n y_n (\log y_n - x_n)`
+        counts = inx.flatten().bincount(minlength=self.num_embeddings)
+        entropy = -F.kl_div(torch.tensor([0.]), counts / inx.numel(),
+                            log_target=False, reduction='sum')
+
+        return inx, entropy.exp()
+
+    def fetch(seld, indices: torch.LongTensor, at: int = 1):
+        """fetch embeddings and put their dim at position `at`"""
+        vectors = super().forward(indices)  # call Embedding.forward
+
+        # indices.shape is batch x *spatial
+        dims = list(range(indices.ndim))
+        at = (vectors.ndim + at) if at < 0 else at
+        # vectors.permute(0, input.ndim-1, *range(1, input.ndim-1))
+        return vectors.permute(*dims[:at], indices.ndim, *dims[at:])
+
+    def forward(self, input: torch.Tensor) -> Tuple[torch.Tensor]:
+        """vq-VAE clustering with straight-through estimator and commitment
+        losses.
+
+        Details
+        -------
+        Implements
+
+            [van den Oord et al. (2017)](https://arxiv.org/abs/1711.00937).
+
+        See further details in the class docstring.
+        """
+        # lookup the index of the nearest embedding and fetch it
+        indices, perplexity = self.lookup(input)
+        vectors = self.fetch(indices, at=1)
+
+        # commitment loss terms (identical in value, but not in backprop graph)
+        emb_loss = F.mse_loss(vectors, input.detach(), reduction='mean')
+        enc_loss = F.mse_loss(input, vectors.detach(), reduction='mean')
+
+        # build the staright-through grad estimator
+        output = input + (vectors - input).detach()
+        return output, emb_loss, enc_loss, perplexity
