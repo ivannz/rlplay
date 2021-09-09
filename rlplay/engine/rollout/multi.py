@@ -18,11 +18,22 @@ from ..utils import check_signature
 
 
 Control = namedtuple('Control', ['reflock', 'empty', 'ready'])
+Buffers = namedtuple('Buffers', ['n_steps', 'n_envs', 'buffers'])
 
 
 def p_stepper(
-    rk, ws, ss, ctrl, factory, buffers, shared,
-    clone=True, sticky=False, close=True, affinity=None
+    rk,
+    ws,
+    ss,
+    ctrl,
+    factory,
+    buffers,
+    shared,
+    clone=True,
+    sticky=False,
+    close=True,
+    affinity=None,
+    transform=None,
 ):
     r"""Trajectory fragment collection subprocess.
 
@@ -60,18 +71,52 @@ def p_stepper(
         # make an identical local copy
         actor = deepcopy(shared).to(device)
 
+    # ENH `buffers` are shared outputs, which our parent wishes we collected.
+    # depending on `transform` they may be transformed, i.e. have arbitrary
+    # structure and tensors data, or not, i.e. containt the raw essential data
+    # collected directly by `collect`.
+
     # prepare local envs and the associated local env-state runtime context
     n_envs = buffers[ix].state.fin.shape[1]  # `fin` is always T x B
+    # XXX Since we can no longer assume any the structure of nested object with
+    # torch tensors in `buffers`, we must somehow pass the `n_steps` into the
+    # worker too (without +1)! See L64 above and `prepare`.
 
     env_seeds = ss[rk].spawn(n_envs)  # spawn grandchild seeds
     envs = [factory(seed=seed) for seed in env_seeds]
 
-    ctx, fragment = startup(envs, actor, buffers[ix], pinned=pinned)
-    # XXX buffers are interchangeable vessels for data, whereas runtime
-    # context is not synchronised to envs and the actor of this worker.
+    # cache of aliased fragments (always on the host) and the local data buffer
+    fragments, local = {}, None
+    if transform is None:
+        # bypass the local essential data buffer and do
+        #    ctx --{collect}-->> buffers[ix] (x M)
+        # `collect` direcly writes into the shared buffer
 
-    # cache of aliased fragments
-    fragments = {ix: fragment}
+        # buffers are untransformed, so we can reuse them
+        ctx, fragments[ix] = startup(envs, actor, buffers[ix], pinned=pinned)
+        # XXX buffers are interchangeable vessels for data, whereas runtime
+        # context is not synchronised to envs and the actor of this worker.
+
+    else:
+        assert False
+        # create an intermediate fragment for the essential `REACT - STEP+EMIT`
+        # data filled by calls to `collect`.
+        #    context --{collect}-->> local --{transform}-->> buffers[ix] (x M)
+        # `transform` maps this data into the shared buffer data.
+
+        # allocate a local torch-data nested buffer for the __essential__ data
+        n_steps, n_envs = (...).state.fin.shape  # (T+1) x B
+
+        # spawn an env for buffer allocation we need to know `env_info` from it
+        local = prepare(factory(seed=None), actor, n_steps - 1, n_envs,
+                        pinned=pinned, device=device)
+        # XXX `local` is always on host, since it must be numpy-aliasable!
+        # The device here refers to where the temporary context in `prepare`
+        # should be put, so that the actor can `.step` on it. see `prepare`.
+
+        # `startup` does not alter or copy `local`, just aliases it!
+        ctx, local = startup(envs, actor, local, pinned=pinned)
+
     try:
         while ix is not None:
             # ensure consistent parameter update from the shared reference
@@ -80,14 +125,21 @@ def p_stepper(
                     actor.load_state_dict(shared.state_dict(), strict=True)
                     # XXX tau-moving average update?
 
-            # XXX `aliased` redundantly traverses `pyt` nested containers, but
-            # `buffers` are allways torch tensors, so we just numpify them.
-            if ix not in fragments:
-                fragments[ix] = Aliased(numpify(buffers[ix]), buffers[ix])
+            # collect rollout with an up-to-date actor into the shared or local
+            # buffer and optionally apply the worker-side preprocessing.
+            if transform is None:
+                # XXX `aliased` redundantly traverses `pyt` nested containers,
+                # but `buffers` are always torch tensors, so just numpify them.
+                if ix not in fragments:
+                    fragments[ix] = Aliased(numpify(buffers[ix]), buffers[ix])
+                collect(envs, actor, fragments[ix], ctx,
+                        sticky=sticky, device=device)
 
-            # collect rollout with an up-to-date actor into the buffer
-            collect(envs, actor, fragments[ix], ctx,
-                    sticky=sticky, device=device)
+            else:
+                # transform the local essential data into the acquired buffer
+                collect(envs, actor, local, ctx, sticky=sticky, device=device)
+                transform(local.pyt, out=buffers[ix])
+                # XXX `buffers` are allways torch tensors, so we `.pyt` here
 
             ctrl.ready.put(ix)
 
@@ -110,8 +162,17 @@ def rollout(
     # the size of the rollout buffer pool (must have spare buffers)
     n_buffers=16,
     n_per_batch=4,
-    *, sticky=False, pinned=False, close=False, clone=True, device=None,
-    start_method=None, timeout=10, affinity=None, entropy=None
+    *,
+    sticky=False,
+    pinned=False,
+    close=False,
+    clone=True,
+    device=None,
+    start_method=None,
+    timeout=10,
+    affinity=None,
+    entropy=None,
+    transform=None,
 ):
     check_signature(factory, seed=None)
 
@@ -135,6 +196,12 @@ def rollout(
 
     # a single one-element-batch forward pass through the copy
     ref = prepare(env, shared, n_steps, n_per_actor, pinned=False, device=None)
+
+    # ENH `transform` the prepared buffer for essential data
+    if transform is not None:
+        ref = transform(ref, out=None)  # XXX out=None allocated new data!
+        # XXX ref could have any arbitrary structure, even shapes are no longer
+        # guaranteed. Everything is determined by `transform`.
 
     # some environments don't like being closed or deleted, e.g. `nle`
     if close:
@@ -175,8 +242,17 @@ def rollout(
         p_stepper, start_method=mp._name, daemon=False, nprocs=n_actors,
         # collectors' device may be other than the main device
         join=False, args=(
-            n_actors, worker_ss, ctrl, CloudpickleSpawner(factory), buffers,
-            shared, clone, sticky, close, affinity
+            n_actors,
+            worker_ss,
+            ctrl,
+            CloudpickleSpawner(factory),
+            buffers,
+            shared,
+            clone,
+            sticky,
+            close,
+            affinity,
+            transform,
         ))
 
     # fetch for ready trajectory fragments and collate them into a batch
