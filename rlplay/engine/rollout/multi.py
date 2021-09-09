@@ -174,7 +174,10 @@ def rollout(
     entropy=None,
     transform=None,
 ):
+    # API checks until the first release
     check_signature(factory, seed=None)
+    if transform is not None:
+        check_signature(transform, seed=None)
 
     # the device to put the batches onto
     device = torch.device('cpu') if device is None else device
