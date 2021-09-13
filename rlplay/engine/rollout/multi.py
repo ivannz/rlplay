@@ -98,7 +98,9 @@ def p_stepper(
         # context is not synchronised to envs and the actor of this worker.
 
     else:
-        assert False
+        # XXX disabled atm, since we do not communicate `n_steps` into here.
+        raise NotImplementedError
+
         # create an intermediate fragment for the essential `REACT - STEP+EMIT`
         # data filled by calls to `collect`.
         #    context --{collect}-->> local --{transform}-->> buffers[ix] (x M)
