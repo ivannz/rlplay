@@ -1,7 +1,7 @@
 import torch
 import numpy
 
-from ..core import context, tensor_copy_, Fragment
+from ..core import context, pyt_copy_, Fragment
 from ..utils import suply, tuply, getitem, setitem
 
 
@@ -72,7 +72,7 @@ def episode(envs, actor, *, device=None):
         act_, hx_, info_actor = actor.step(*current_, hx=hx, virtual=False)
 
         # STEP + EMIT: `.step` through a batch of envs
-        tensor_copy_(pyt.act, act_)
+        pyt_copy_(pyt.act, act_)
         for j, env in enumerate(envs):
             # get $(s_t, a_t) \to (s_{t+1}, x_{t+1}, r_{t+1}, d_{t+1})$
             act_ = suply(getitem, npy.act, index=j)
@@ -87,7 +87,7 @@ def episode(envs, actor, *, device=None):
 
         # update device-resident copies of `ctx` and `info_env`
         if not on_host:
-            tensor_copy_((pyt_, info_env_pyt_), (pyt, info_env_pyt))
+            pyt_copy_((pyt_, info_env_pyt_), (pyt, info_env_pyt))
 
         # response: t, state[t], h_t, actor[t], state[t+1], env[t+1]
         yield current_, hx, info_actor, pyt_, info_env_pyt_
@@ -103,10 +103,10 @@ def episode(envs, actor, *, device=None):
 
         # move the final `ctx` to its device-resident copy
         if pyt_ is not pyt:
-            tensor_copy_(pyt_, pyt)
+            pyt_copy_(pyt_, pyt)
 
         # overwrite the current state for the next iteration
-        tensor_copy_(current_, pyt_)
+        pyt_copy_(current_, pyt_)
         hx = hx_
 
 

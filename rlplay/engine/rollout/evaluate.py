@@ -9,7 +9,7 @@ from numpy.random import SeedSequence
 from copy import deepcopy
 from collections import namedtuple
 
-from ..core import context, tensor_copy_
+from ..core import context, pyt_copy_
 from ..utils.plyr import suply, setitem, getitem
 from ..utils import check_signature
 
@@ -69,7 +69,7 @@ def p_evaluate(
             while not done and t < n_steps:
                 # REACT: $(x_t, a_{t-1}, r_t, d_t, h_t) \to a_t$ and commit $a_t$
                 act_, hx, info_ = actor.step(*pyt_, hx=hx, virtual=False)
-                tensor_copy_(pyt.act, act_)
+                pyt_copy_(pyt.act, act_)
 
                 # STEP + EMIT: `.step` through a batch of envs
                 for j, env in enumerate(envs):
@@ -93,7 +93,7 @@ def p_evaluate(
 
                 # move the updated `ctx` to its device-resident torch copy
                 if pyt_ is not pyt:
-                    tensor_copy_(pyt_, pyt)
+                    pyt_copy_(pyt_, pyt)
 
                 # stop only if all environments have been terminated
                 done = numpy.all(npy.fin)

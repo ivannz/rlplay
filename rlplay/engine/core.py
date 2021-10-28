@@ -124,7 +124,13 @@ Fragment.__doc__ += "\n" + r"""
     """
 
 
-def tensor_copy_(dst, src, *, at=None, _copy=torch.Tensor.copy_):
+def pyt_copy_(
+    dst,
+    src,
+    *,
+    at=None,
+    _copy=torch.Tensor.copy_,
+):
     """Copy tensor data from the `src` nested object into the `dst` object with
     IDENTICAL structure at the specified index (int, tuple of ints, or slices).
     """
@@ -134,7 +140,13 @@ def tensor_copy_(dst, src, *, at=None, _copy=torch.Tensor.copy_):
     suply(_copy, dst, src)
 
 
-def numpy_copy_(dst, src, *, at=None, _copy=numpy.copyto):
+def npy_copy_(
+    dst,
+    src,
+    *,
+    at=None,
+    _copy=numpy.copyto,
+):
     """Copy numpy data between nested objects with IDENTICAL structure."""
     if at is not None:
         dst = suply(getitem, dst, index=at)
@@ -212,7 +224,17 @@ class BaseActorModule(torch.nn.Module):
         # update $(t, x_t, a_{t-1}, r_t, d_t, h_t) \to (a_t, h_{t+1})$ or not.
         return hx_
 
-    def step(self, stepno, obs, act, rew, fin, /, *, hx, virtual):
+    def step(
+        self,
+        stepno,
+        obs,
+        act,
+        rew,
+        fin,
+        /, *,
+        hx,
+        virtual,
+    ):
         r"""Get the response to the current observed and recurrent state.
 
         Parameters
@@ -301,13 +323,27 @@ class BaseActorModule(torch.nn.Module):
         The actor MUST NOT update or change the inputs and `hx` in-place,
         and SHOULD return only newly created tensors.
         """
-        return self(obs, act=act, rew=rew, fin=fin, stepno=stepno,
-                    hx=hx, virtual=virtual)
+        return self(
+            obs,
+            act=act,
+            rew=rew,
+            fin=fin,
+            stepno=stepno,
+            hx=hx,
+            virtual=virtual,
+        )
 
 
 @torch.no_grad()
 def prepare(
-    env, actor, n_steps, n_envs, *, pinned=False, shared=False, device=None
+    env,
+    actor,
+    n_steps,
+    n_envs,
+    *,
+    pinned=False,
+    shared=False,
+    device=None,
 ):
     """Build a nested object with tensor data for rollout trajectory fragments.
 
@@ -402,7 +438,13 @@ def prepare(
 
 
 @torch.no_grad()
-def startup(envs, actor, buffer, *, pinned=False):
+def startup(
+    envs,
+    actor,
+    buffer,
+    *,
+    pinned=False,
+):
     """Alias the rollout buffer and allocate aliased running context.
 
     Parameters
@@ -456,8 +498,11 @@ def startup(envs, actor, buffer, *, pinned=False):
     fragment = aliased(buffer)  # just a zero-copy pyt-npy alias
 
     # Fetch a single [B x ?] observation (a VIEW into fragment for now)
-    npy, pyt = suply(getitem, (fragment.npy.state, fragment.pyt.state,),
-                     index=0)
+    npy, pyt = suply(
+        getitem,
+        (fragment.npy.state, fragment.pyt.state,),
+        index=0,
+    )
     hx = fragment.pyt.hx
 
     # Flag the state as having just been reset, meaning that the previous
@@ -488,7 +533,10 @@ def startup(envs, actor, buffer, *, pinned=False):
 
 
 @torch.no_grad()
-def context(*envs, pinned=False):
+def context(
+    *envs,
+    pinned=False,
+):
     r"""Allocate aliased running state for simple rollout collection.
 
     Parameters
@@ -555,7 +603,15 @@ def context(*envs, pinned=False):
 
 
 @torch.no_grad()
-def collect(envs, actor, fragment, context, *, sticky=False, device=None):
+def collect(
+    envs,
+    actor,
+    fragment,
+    context,
+    *,
+    sticky=False,
+    device=None,
+):
     r"""Collect the rollout trajectory fragment by marching the actor and
     the environments in lockstep (`actor` and `envs`, respectively), updating
     `context` and recording everything into `fragment`.
@@ -819,7 +875,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     fragment_npy_env = fragment.npy.env
 
     # write the initial recurrent state of the actor to the shared buffer
-    tensor_copy_(fragment.pyt.hx, hx)
+    pyt_copy_(fragment.pyt.hx, hx)
 
     # allocate on-device context and recurrent state, if device is not `host`
     pyt_ = pyt
@@ -834,7 +890,7 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     #    * `.env[t]` is env's info from the $s_t, a_t \to s_{t+1}$ step
     #    * `context` is $(t, x_{t+1}, a_t, r_{t+1}, d_{t+1})$,
     #                the original $x_t$ (optional), and the recent env info
-    #    * `hx` is $h_{t+1}$, build from `hx_` and actor's resets
+    #    * `hx` is $h_{t+1}$, built from `hx_` and actor's resets
     #  and write it to `out[t+1]`. This is OK for Q-learning methods and SARSA
     #  since `out[t]` and `out[t+1]` are contain consecutive $x_t$, $a_{t-1}$,
     #  $r_t$ and $x_{t+1}$, whenever `out.fin[t+1]` ($d_{t+1}$) is `False`
@@ -854,14 +910,14 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
 
         # `.actor[t] <<-- info`. `fragment.pyt` likely has `is_shared()`,
         #  so it cannot be in the pinned memory.
-        tensor_copy_(fragment.pyt.actor, info_actor, at=slice(t, t + 1))
+        pyt_copy_(fragment.pyt.actor, info_actor, at=slice(t, t + 1))
         if t >= n_steps:
             # the T-th REACT interaction within the current trajectory fragment
             #  is used for lookahead only (bootstrap value estimate).
             break
 
         # the actor may return device-resident tensors, so we copy them here
-        tensor_copy_(pyt.act, act_)  # commit $a_t$ into `ctx`
+        pyt_copy_(pyt.act, act_)  # commit $a_t$ into `ctx`
 
         # STEP + EMIT: `.step` through a batch of envs
         for j, env in enumerate(envs):
@@ -904,11 +960,11 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
             npy.fin[j] = fin_
 
         # copy back into `hx` in case it is in the pinned memory
-        tensor_copy_(hx, hx_)
+        pyt_copy_(hx, hx_)
 
         # update the device-resident copy of the `ctx` (`hx` is already OK)
         if pyt_ is not pyt:
-            tensor_copy_(pyt_, pyt)
+            pyt_copy_(pyt_, pyt)
 
         if fragment_has_original_obs:
             suply(setitem, fragment.npy.original_obs, ctx_npy_original_obs,
@@ -917,24 +973,31 @@ def collect(envs, actor, fragment, context, *, sticky=False, device=None):
     # `hx` may have been spuriously updated on the stationary stuck inputs,
     #  so we ask the actor to reset it one last time for good measure.
     if sticky:
-        # If `pyt_` is terminal, then it's original `act` and `rew` might have
+        # If `pyt_` is terminal, then its original `act` and `rew` might have
         #  been overwritten, and `hx` may have been spuriously advanced.
         #  Otherwise, the contents in `pyt_` are from the most recent state in
         #  the rollout, and `hx` is a genuine recurrent state.
         for j in range(len(envs)):
             if npy.fin[j]:
-                tensor_copy_(hx, actor.reset(hx, j))
+                pyt_copy_(hx, actor.reset(hx, j))
 
     # write back the most recent recurrent state for the next rollout
     # XXX here `hx` is deliberately not `hx_` to avoid updating the recurrent
     #  state due to the lookahead virtual REACT step
-    tensor_copy_(context.pyt.hx, hx)
+    pyt_copy_(context.pyt.hx, hx)
 
     return True
 
 
 @torch.no_grad()
-def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
+def evaluate(
+    envs,
+    actor,
+    *,
+    n_steps=None,
+    render=False,
+    device=None,
+):
     """Evaluate the actor module in the environment.
 
     Parameters
@@ -1005,7 +1068,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
 
         info_actor.append(suply(torch.Tensor.cpu, info_))
 
-        tensor_copy_(pyt.act, act_)
+        pyt_copy_(pyt.act, act_)
 
         # STEP + EMIT: `.step` through a batch of envs
         for j, env in enumerate(envs):
@@ -1027,7 +1090,7 @@ def evaluate(envs, actor, *, n_steps=None, render=False, device=None):
 
         # move the updated `ctx` to its device-resident torch copy
         if pyt_ is not pyt:
-            tensor_copy_(pyt_, pyt)
+            pyt_copy_(pyt_, pyt)
 
         # stop only if all environments have been terminated
         done = numpy.all(npy.fin)
