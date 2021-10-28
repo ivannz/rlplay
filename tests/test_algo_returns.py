@@ -10,6 +10,7 @@ from rlplay.algo.returns import pyt_gae, npy_gae
 from rlplay.algo.returns import pyt_deltas, npy_deltas
 from rlplay.algo.returns import pyt_returns, npy_returns
 from rlplay.algo.returns import pyt_vtrace, npy_vtrace
+from rlplay.algo.returns import pyt_multistep, npy_multistep
 
 RewardsData = namedtuple('RewardsData', [
     'rew', 'fin', 'val', 'bootstrap', 'omega'
@@ -19,8 +20,8 @@ RewardsData = namedtuple('RewardsData', [
 def random_reward_data(T=120, B=10, dtype=float, M=None):
     rew = torch.randn(T, B, M or 1, dtype=dtype)
     fin = torch.randint(2, size=(T, B,), dtype=bool)
-    val = torch.randn(T, B, M or 1, dtype=dtype)
-    bootstrap = torch.randn(1, B, M or 1, dtype=dtype)
+    val = torch.randn(T + 1, B, M or 1, dtype=dtype)
+    val, bootstrap = val[:-1], val[-1:]
 
     if M is None:
         bootstrap = bootstrap.squeeze(-1)
@@ -29,6 +30,24 @@ def random_reward_data(T=120, B=10, dtype=float, M=None):
 
     # log importance weight of the taken action (target vs. behavioral)
     omega = torch.randn(T, B, dtype=dtype)
+    return aliased(RewardsData(rew, fin, val, bootstrap, omega))
+
+
+def simple_reward_data(T=120, B=10, dtype=float, M=None):
+    rew = torch.ones(T, B, M or 1, dtype=dtype)
+    fin = torch.randint(2, size=(T, B,), dtype=bool)
+    # fin = torch.zeros(T, B, dtype=bool)
+    val = torch.randn(T + 1, B, M or 1, dtype=dtype)
+    # val = torch.full((T + 1, B, M or 1), 10., dtype=dtype)
+    val, bootstrap = val[:-1], val[-1:]
+
+    if M is None:
+        bootstrap = bootstrap.squeeze(-1)
+        rew = rew.squeeze(-1)
+        val = val.squeeze(-1)
+
+    # log importance weight of the taken action (target vs. behavioral)
+    omega = torch.zeros(T, B, dtype=dtype)
     return aliased(RewardsData(rew, fin, val, bootstrap, omega))
 
 
@@ -49,6 +68,28 @@ def npy_manual_present_value(rew, fin, *, gamma, rho, bootstrap):
     results.reverse()
 
     return numpy.concatenate(results, axis=0)
+
+
+def npy_manual_multistep_value(rew, fin, val, *, gamma, rho, bootstrap, h):
+    # compute h-step lookahead returns
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    fin = fin.reshape(*fin.shape, *trailing)
+    rho = rho.reshape(*rho.shape, *trailing)
+
+    # backward accumulation
+    n_steps, *shape = rew.shape
+    multistep = numpy.zeros((h + 1, n_steps + 1, *shape), dtype=val.dtype)
+
+    multistep[0, :-1] = val
+    for j in range(h):
+        # make sure to push the bootstrap value v(s_T) into
+        #  the buffer from beyond.
+        multistep[j, -1:] = bootstrap
+
+        # g_t = r_{t+1} + \gamma \rho_{t+1} 1_{\neg d_{t+1}} g_{t+1}
+        multistep[j+1, :-1] = rew + rho * gamma * (~fin) * multistep[j, 1:]
+
+    return multistep[h, :-1]
 
 
 def npy_manual_deltas(rew, fin, val, *, gamma, rho, bootstrap):
@@ -108,6 +149,57 @@ def test_returns(gamma, M, T=120, B=10):
             omega=torch.from_numpy(omega), bootstrap=data.pyt.bootstrap[0])
 
         assert numpy.allclose(pyt.numpy(), expected)
+
+
+@pytest.mark.parametrize('gamma', [
+    0.0, 0.5, 0.9, 0.999, 1.0
+])
+@pytest.mark.parametrize('M', [
+    None, 5
+])
+@pytest.mark.parametrize('h', [
+    1, 5, 20
+])
+def test_multistep(gamma, M, h, T=120, B=10):
+    data = random_reward_data(T, B, M=M)
+
+    expected = npy_manual_multistep_value(
+        data.npy.rew, data.npy.fin, data.npy.val, gamma=gamma, h=h,
+        rho=numpy.ones_like(data.npy.fin, float),
+        bootstrap=data.npy.bootstrap)
+
+    npy = npy_multistep(data.npy.rew, data.npy.fin, data.npy.val,
+                        gamma=gamma, h=h,
+                        omega=None, bootstrap=data.npy.bootstrap)
+    assert numpy.allclose(npy, expected)
+
+    pyt = pyt_multistep(data.pyt.rew, data.pyt.fin, data.pyt.val,
+                        gamma=gamma, h=h,
+                        omega=None, bootstrap=data.pyt.bootstrap)
+    assert numpy.allclose(pyt.numpy(), expected, rtol=1e-5, atol=1e-6)
+
+    # test importance weights
+    for r_bar in [0.5, 1.0, 2.0, None]:
+        rho = numpy.minimum(numpy.exp(data.npy.omega), r_bar or float('+inf'))
+
+        expected = npy_manual_multistep_value(
+            data.npy.rew, data.npy.fin, data.npy.val, gamma=gamma, h=h,
+            rho=rho, bootstrap=data.npy.bootstrap)
+
+        omega = numpy.log(rho)
+
+        npy = npy_multistep(
+            data.npy.rew, data.npy.fin, data.npy.val,
+            gamma=gamma, h=h, r_bar=None, omega=omega,
+            bootstrap=data.npy.bootstrap)
+        assert numpy.allclose(npy, expected)
+
+        pyt = pyt_multistep(
+            data.pyt.rew, data.pyt.fin, data.pyt.val,
+            gamma=gamma, h=h, r_bar=None, omega=torch.from_numpy(omega),
+            bootstrap=data.pyt.bootstrap)
+
+        assert numpy.allclose(pyt.numpy(), expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize('gamma', [

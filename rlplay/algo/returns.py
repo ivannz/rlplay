@@ -38,6 +38,64 @@ def npy_returns(rew, fin, *, gamma, bootstrap=0., omega=None, r_bar=None):
     return G_t[:-1]
 
 
+def npy_multistep(
+    rew,
+    fin,
+    val,
+    *,
+    gamma,
+    h,
+    bootstrap=0.,
+    omega=None,
+    r_bar=None,
+):
+    r"""Compute the h-lookahead multistep returns bootstrapped with values.
+
+        G_t = r_{t+1}
+              + \gamma \omega_{t+1} r_{t+2}
+              + \gamma^2 \omega_{t+1} \omega_{t+2} r_{t+3} + ...
+            = \sum_{j\geq t} r_{j+1} \gamma^{j-t} \prod_{s=t+1}^j \omega_s
+            = \sum_{j=0}^{h-1} \gamma^j r_{t+j+1} \prod_{s=1}^j \omega_{t+s}
+              + \gamma^h \prod_{s=1}^h \omega_{t+s}
+                  G_{t+h}
+            \approx
+                \sum_{j=0}^{h-1}
+                    \gamma^j \Bigl( \prod_{s=1}^j \omega_{t+s} \Bigr)
+                    r_{t+j+1}
+                + \gamma^h \Bigl( \prod_{s=1}^h \omega_{t+s} \Bigr)
+                  v_{t+h}
+    """
+    # r(t) = rew[t] = r_{t+1}, ditto for d = fin,
+    # v(t) = val[t] if t < T, bsv if t=T, 0 o/w
+    # let op F be def-nd as
+    #     (F x)(t) := \omega_{t+1} d_{t+1} x(t+1) = d[t] * x[t+1]
+    # then the m-step lookahead bootstrapped value estimate is
+    #     v_0 = v, v_{j+1} = r + \gamma F v_j, j=0..h-1
+    # or after unrolling:
+    #     v_h = \sum_{j=0}^{h-1} \gamma^j F^j r + F^h v
+
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+
+    # eff[t] = (~fin[t]) * gamma = 1_{\neg d_{t+1}} \gamma, t=0..T-1
+    eff = numpy.where(fin, 0., gamma)
+    if omega is not None:
+        # \rho_t = \min\{ \bar{\rho}, \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
+        eff *= numpy.minimum(numpy.exp(omega), r_bar or float('+inf'))
+
+    # add extra trailing unitary dims for broadcasting
+    eff = eff.reshape(*eff.shape, *trailing)
+
+    # out[t] = val[t] = v(s_t), t=0..T-1, out[T] = bsv = v(s_T)
+    out = numpy.concatenate([val, bootstrap], axis=0)
+    for _ in range(h):
+        # out[t] = rew[t] + eff[t] * out[t+1], t=0..T-1
+        #        = r_{t+1} + \gamma 1_{\neg d_{t+1}} v(s_{t+1})
+        out[:-1] = rew + eff * out[1:]
+
+    # do not cut off incomplete returns
+    return out[:-1]
+
+
 def npy_deltas(rew, fin, val, *, gamma, bootstrap=0., omega=None, r_bar=None):
     r"""Compute the importance weighted td-error estimates:
 
@@ -210,6 +268,51 @@ def pyt_returns(rew, fin, *, gamma, bootstrap=0., omega=None, r_bar=None):
         G_t[-j-1].add_(rew[-j])  # add the received reward r_{t+1}
 
     return G_t[:-1]
+
+
+@torch.no_grad()
+def pyt_multistep(
+    rew,
+    fin,
+    val,
+    *,
+    gamma,
+    h,
+    bootstrap=0.,
+    omega=None,
+    r_bar=None,
+):
+    r"""Compute the importance weighted present-value estimate:
+
+        G_t = r_{t+1} + \gamma \rho_t G_{t+1} 1_{\neg d_{t+1}}
+    """
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+
+    # v(s_t) ~ G_t = r_{t+1} + \gamma G_{t+1} 1_{\neg d_{t+1}}
+    # r_{t+1}, s_{t+1} \sim p(r, s, \mid s_t, a_t), a_t \sim \pi(a \mid s_t)
+    # d_{t+1} indicates if $s_{t+1}$ is terminal
+    pass
+
+    # eff[t] = (~fin[t]) * gamma = 1_{\neg d_{t+1}} \gamma, t=0..T-1
+    eff = torch.where(fin, 0., gamma)
+    if omega is not None:
+        # \rho_t = \min\{ \bar{\rho}, \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
+        eff.mul_(omega.exp().clamp_(max=r_bar or float('+inf')))
+
+    eff = eff.reshape(*eff.shape, *trailing)
+
+    n_steps, *shape = rew.shape
+    out = rew.new_zeros((1 + n_steps, *shape))
+    out[:-1].copy_(val)
+
+    out[-1:].copy_(torch.as_tensor(bootstrap))
+    for _ in range(h):
+        # out[t] = rew[t] + eff[t] * out[t+1], t=0..T-1
+        out[:-1] = rew + eff * out[1:]
+
+    # do not cut off incomplete returns
+    return out[:-1]
 
 
 @torch.no_grad()
