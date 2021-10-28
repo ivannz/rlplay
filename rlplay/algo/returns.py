@@ -44,7 +44,7 @@ def npy_multistep(
     val,
     *,
     gamma,
-    h,
+    n_lookahead=None,
     bootstrap=0.,
     omega=None,
     r_bar=None,
@@ -73,8 +73,10 @@ def npy_multistep(
     #     v_0 = v, v_{j+1} = r + \gamma F v_j, j=0..h-1
     # or after unrolling:
     #     v_h = \sum_{j=0}^{h-1} \gamma^j F^j r + F^h v
-
-    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
+    n_steps, *shape = rew.shape
+    n_lookahead = n_lookahead or n_steps
+    # XXX this function has at most the same complexity as `npy_returns`
+    #  for `n_lookahead = None`.
 
     # eff[t] = (~fin[t]) * gamma = 1_{\neg d_{t+1}} \gamma, t=0..T-1
     eff = numpy.where(fin, 0., gamma)
@@ -83,14 +85,17 @@ def npy_multistep(
         eff *= numpy.minimum(numpy.exp(omega), r_bar or float('+inf'))
 
     # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
     eff = eff.reshape(*eff.shape, *trailing)
 
     # out[t] = val[t] = v(s_t), t=0..T-1, out[T] = bsv = v(s_T)
-    out = numpy.concatenate([val, bootstrap], axis=0)
-    for _ in range(h):
+    # compute the multistep returns by shifting t to t-1 repeatedly
+    out = numpy.concatenate([val, bootstrap], axis=0)  # assume bsv has len = 1
+    # XXX no need for double buffering
+    for _ in range(n_lookahead):
         # out[t] = rew[t] + eff[t] * out[t+1], t=0..T-1
         #        = r_{t+1} + \gamma 1_{\neg d_{t+1}} v(s_{t+1})
-        out[:-1] = rew + eff * out[1:]
+        out[:-1] = rew + eff * out[1:]  # out[-1] is to be kept intact!
 
     # do not cut off incomplete returns
     return out[:-1]
@@ -277,7 +282,7 @@ def pyt_multistep(
     val,
     *,
     gamma,
-    h,
+    n_lookahead=None,
     bootstrap=0.,
     omega=None,
     r_bar=None,
@@ -286,33 +291,40 @@ def pyt_multistep(
 
         G_t = r_{t+1} + \gamma \rho_t G_{t+1} 1_{\neg d_{t+1}}
     """
-    # add extra trailing unitary dims for broadcasting
-    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
-
     # v(s_t) ~ G_t = r_{t+1} + \gamma G_{t+1} 1_{\neg d_{t+1}}
     # r_{t+1}, s_{t+1} \sim p(r, s, \mid s_t, a_t), a_t \sim \pi(a \mid s_t)
     # d_{t+1} indicates if $s_{t+1}$ is terminal
-    pass
+    n_steps, *shape = rew.shape
+    n_lookahead = n_lookahead or n_steps
 
     # eff[t] = (~fin[t]) * gamma = 1_{\neg d_{t+1}} \gamma, t=0..T-1
-    eff = torch.where(fin, 0., gamma)
+    eff = rew.new_full(fin.shape, gamma).masked_fill_(fin, 0.)
     if omega is not None:
         # \rho_t = \min\{ \bar{\rho}, \frac{\pi_t(a_t)}{\mu_t(a_t)} \}
         eff.mul_(omega.exp().clamp_(max=r_bar or float('+inf')))
 
+    # add extra trailing unitary dims for broadcasting
+    trailing = (1,) * max(rew.ndim - fin.ndim, 0)
     eff = eff.reshape(*eff.shape, *trailing)
 
-    n_steps, *shape = rew.shape
-    out = rew.new_zeros((1 + n_steps, *shape))
-    out[:-1].copy_(val)
+    # a double buffer for the intermediate calculations is autodiff-friendly
+    # XXX for autodiff it is better to make `val` have n_steps+1 length
+    #  with its last value being the bootstrap
+    out = val.new_zeros((2, n_steps + 1, *shape))
+    out[:, -1:].copy_(torch.as_tensor(bootstrap))
+    out[:, :-1].copy_(val)
 
-    out[-1:].copy_(torch.as_tensor(bootstrap))
-    for _ in range(h):
-        # out[t] = rew[t] + eff[t] * out[t+1], t=0..T-1
-        out[:-1] = rew + eff * out[1:]
+    j = 0  # index into double buffer that we read from
+    for _ in range(n_lookahead):
+        # out[1-j, t] = rew[t] + eff[t] * out[j, t+1], t=0..T-1
+        # out[1-j, :-1] = torch.addcmul(rew, eff, out[j, 1:])
+        torch.addcmul(rew, eff, out[j, 1:], out=out[1-j, :-1])
+
+        # flip the buffer
+        j = 1 - j
 
     # do not cut off incomplete returns
-    return out[:-1]
+    return out[j, :-1]
 
 
 @torch.no_grad()

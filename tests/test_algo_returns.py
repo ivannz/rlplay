@@ -70,7 +70,16 @@ def npy_manual_present_value(rew, fin, *, gamma, rho, bootstrap):
     return numpy.concatenate(results, axis=0)
 
 
-def npy_manual_multistep_value(rew, fin, val, *, gamma, rho, bootstrap, h):
+def npy_manual_multistep_value(
+    rew,
+    fin,
+    val,
+    *,
+    gamma,
+    n_lookahead,
+    rho,
+    bootstrap,
+):
     # compute h-step lookahead returns
     trailing = (1,) * max(rew.ndim - fin.ndim, 0)
     fin = fin.reshape(*fin.shape, *trailing)
@@ -78,10 +87,13 @@ def npy_manual_multistep_value(rew, fin, val, *, gamma, rho, bootstrap, h):
 
     # backward accumulation
     n_steps, *shape = rew.shape
-    multistep = numpy.zeros((h + 1, n_steps + 1, *shape), dtype=val.dtype)
+    multistep = numpy.zeros(
+        (n_lookahead + 1, n_steps + 1, *shape),
+        dtype=val.dtype,
+    )
 
     multistep[0, :-1] = val
-    for j in range(h):
+    for j in range(n_lookahead):
         # make sure to push the bootstrap value v(s_T) into
         #  the buffer from beyond.
         multistep[j, -1:] = bootstrap
@@ -89,7 +101,7 @@ def npy_manual_multistep_value(rew, fin, val, *, gamma, rho, bootstrap, h):
         # g_t = r_{t+1} + \gamma \rho_{t+1} 1_{\neg d_{t+1}} g_{t+1}
         multistep[j+1, :-1] = rew + rho * gamma * (~fin) * multistep[j, 1:]
 
-    return multistep[h, :-1]
+    return multistep[n_lookahead, :-1]
 
 
 def npy_manual_deltas(rew, fin, val, *, gamma, rho, bootstrap):
@@ -157,49 +169,52 @@ def test_returns(gamma, M, T=120, B=10):
 @pytest.mark.parametrize('M', [
     None, 5
 ])
-@pytest.mark.parametrize('h', [
+@pytest.mark.parametrize('n_lookahead', [
     1, 5, 20
 ])
-def test_multistep(gamma, M, h, T=120, B=10):
+def test_multistep(gamma, M, n_lookahead, T=120, B=10):
     data = random_reward_data(T, B, M=M)
 
     expected = npy_manual_multistep_value(
-        data.npy.rew, data.npy.fin, data.npy.val, gamma=gamma, h=h,
+        data.npy.rew, data.npy.fin, data.npy.val,
+        gamma=gamma, n_lookahead=n_lookahead,
         rho=numpy.ones_like(data.npy.fin, float),
         bootstrap=data.npy.bootstrap)
 
     npy = npy_multistep(data.npy.rew, data.npy.fin, data.npy.val,
-                        gamma=gamma, h=h,
+                        gamma=gamma, n_lookahead=n_lookahead,
                         omega=None, bootstrap=data.npy.bootstrap)
     assert numpy.allclose(npy, expected)
 
     pyt = pyt_multistep(data.pyt.rew, data.pyt.fin, data.pyt.val,
-                        gamma=gamma, h=h,
+                        gamma=gamma, n_lookahead=n_lookahead,
                         omega=None, bootstrap=data.pyt.bootstrap)
-    assert numpy.allclose(pyt.numpy(), expected, rtol=1e-5, atol=1e-6)
+    assert numpy.allclose(pyt.numpy(), expected)
 
     # test importance weights
     for r_bar in [0.5, 1.0, 2.0, None]:
         rho = numpy.minimum(numpy.exp(data.npy.omega), r_bar or float('+inf'))
 
         expected = npy_manual_multistep_value(
-            data.npy.rew, data.npy.fin, data.npy.val, gamma=gamma, h=h,
-            rho=rho, bootstrap=data.npy.bootstrap)
+            data.npy.rew, data.npy.fin, data.npy.val,
+            gamma=gamma, n_lookahead=n_lookahead, rho=rho,
+            bootstrap=data.npy.bootstrap)
 
         omega = numpy.log(rho)
 
         npy = npy_multistep(
             data.npy.rew, data.npy.fin, data.npy.val,
-            gamma=gamma, h=h, r_bar=None, omega=omega,
+            gamma=gamma, n_lookahead=n_lookahead, r_bar=None, omega=omega,
             bootstrap=data.npy.bootstrap)
         assert numpy.allclose(npy, expected)
 
         pyt = pyt_multistep(
             data.pyt.rew, data.pyt.fin, data.pyt.val,
-            gamma=gamma, h=h, r_bar=None, omega=torch.from_numpy(omega),
+            gamma=gamma, n_lookahead=n_lookahead, r_bar=None,
+            omega=torch.from_numpy(omega),
             bootstrap=data.pyt.bootstrap)
 
-        assert numpy.allclose(pyt.numpy(), expected, rtol=1e-5, atol=1e-6)
+        assert numpy.allclose(pyt.numpy(), expected)
 
 
 @pytest.mark.parametrize('gamma', [
