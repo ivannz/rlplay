@@ -42,9 +42,10 @@ static const char *__doc__ = "\n"
     "    even for `n=1`.\n"
     "\n"
     "_finalizer : callable, optional\n"
-    "    The finalizer function that gets called every time a nested container\n"
-    "    is created or the leaf data has been processed by callable.\n"
-    "    No finalization takes place if omitted.\n"
+    "    The finalizer object to be called when a nested container has been\n"
+    "    rebuilt. It is NEVER called on the output of `callable`, which is\n"
+    "    computed on the leaf python objects. No finalization takes place if\n"
+    "    the argument is OMITTED.\n"
     "\n"
     "Returns\n"
     "-------\n"
@@ -400,27 +401,29 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
         Py_LeaveRecursiveCall();
 
     } else {
-        result = _apply_base(callable, main, rest, star, kwargs);
-
+        // finalizer is only called on the inner/nested containers, and never
+        //  on the leaf data.
+        return _apply_base(callable, main, rest, star, kwargs);
     }
 
-    if(result == NULL)
-        return NULL;
-
-    // apply the finalizer
-    if(finalizer == NULL)
+    // bypass the finalizer is _apply_* failed and bubble up the exception
+    if(finalizer == NULL || result == NULL)
         return result;
 
-    // emulate `PyObject_CallOneArg`: create a single-element tuple and call
-    // Conventionally, the called function increfs its returned value and
-    // transfers the owenership to the caller.
+    // emulate `PyObject_CallOneArg`: create a single-element tuple, then call
     PyObject *single = PyTuple_New(1);
     PyTuple_SET_ITEM(single, 0, result);
 
-    result = PyObject_Call(finalizer, single, NULL);
+    // the called object increfs its returned value and transfers the ownership
+    //  to the caller (even in the id case `lambda x: x`: we may check
+    //  refcounts of `output` and `result`)
+    PyObject *output = PyObject_Call(finalizer, single, NULL);
+
+    // No need to decref `result`, as decrefing a tuple decrefs all its
+    //  non-NULL items.
     Py_DECREF(single);
 
-    return result;
+    return output;
 }
 
 
