@@ -406,17 +406,23 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
         return _apply_base(callable, main, rest, star, kwargs);
     }
 
-    // bypass the finalizer is _apply_* failed and bubble up the exception
+    // bypass the finalizer if _apply_* failed and bubble up the exception
     if(finalizer == NULL || result == NULL)
         return result;
 
     // emulate `PyObject_CallOneArg`: create a single-element tuple, then call
     PyObject *single = PyTuple_New(1);
-    PyTuple_SET_ITEM(single, 0, result);
+    if(single == NULL) {
+        Py_DECREF(result);
+        return NULL;
+    }
 
     // the called object increfs its returned value and transfers the ownership
-    //  to the caller (even in the id case `lambda x: x`: we may check
-    //  refcounts of `output` and `result`)
+    //  to the caller, i.e. the act of RETURNING is in itself another reference
+    //  see https://docs.python.org/3/extending/extending.html#ownership-rules
+    //      https://stackoverflow.com/questions/57661466/
+    // (we may check refcounts of `output` and `result` for `lambda x: x`)
+    PyTuple_SET_ITEM(single, 0, result);
     PyObject *output = PyObject_Call(finalizer, single, NULL);
 
     // No need to decref `result`, as decrefing a tuple decrefs all its
@@ -476,12 +482,19 @@ PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
             PyObject* arg = PyDict_GetItemString(kwargs, kwlist[p]);
             if (arg == NULL) continue;
 
+            // PyDict_SetItem uses `Py_INCREF() to become an independent owner`
+            //  see https://docs.python.org/3/extending/extending.html#ownership-rules
             PyDict_SetItemString(own, kwlist[p], arg);
             PyDict_DelItemString(kwargs, kwlist[p]);
         }
 
+        // PyArg_ParseTupleAndKeywords does not do anythin with the owenrship
+        //  of `PyObject`, https://docs.python.org/3/c-api/arg.html#other-objects
+        // Thus we hold on to the `finalizer` in case its only ref was
+        //  the `kwargs`, which we tinkered with just above.
         int parsed = PyArg_ParseTupleAndKeywords(
                 empty, own, "|$ppO:apply", kwlist, &safe, &star, &finalizer);
+        Py_XINCREF(finalizer);
 
         Py_DECREF(empty);
         Py_DECREF(own);
@@ -495,6 +508,7 @@ PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
 
     PyObject *result = _apply(callable, main, rest, safe, star, kwargs, finalizer);
     Py_DECREF(rest);
+    Py_XDECREF(finalizer);
 
     return result;
 }
