@@ -7,7 +7,7 @@
 
 
 static const char *__doc__ = "\n"
-    "apply(callable, *objects, _safe=True, _star=True, **kwargs)\n"
+    "apply(callable, *objects, _safe=True, _star=True, _finalizer=None, **kwargs)\n"
     "\n"
     "Compute the function using the leaf data of the nested objects as arguments.\n"
     "\n"
@@ -41,6 +41,11 @@ static const char *__doc__ = "\n"
     "\n"
     "    even for `n=1`.\n"
     "\n"
+    "_finalizer : callable, optional\n"
+    "    The finalizer function that gets called every time a nested container\n"
+    "    is created or the leaf data has been processed by callable.\n"
+    "    No finalization takes place if omitted.\n"
+    "\n"
     "Returns\n"
     "-------\n"
     "result : a new nested object\n"
@@ -66,7 +71,9 @@ static const char *__doc__ = "\n"
     "\n"
     "Details\n"
     "-------\n"
-    "For a single container `apply` with `_star=True` is roughly equivalent to\n"
+    "For a single container `apply` with `_star=True` and omitted `_finalizer`\n"
+    "is roughly equivalent to\n"
+    "\n"
     ">>> def apply(fn, container, **kwargs):\n"
     ">>>     if isinstance(container, dict):\n"
     ">>>         return {k: apply(fn, v, **kwargs)\n"
@@ -82,11 +89,13 @@ static const char *__doc__ = "\n"
 
 
 PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
-                 bool const safe, bool const star, PyObject *kwargs);
+                 bool const safe, bool const star, PyObject *kwargs,
+                 PyObject *finalizer);
 
 
 static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
-                             bool const safe, bool const star, PyObject *kwargs)
+                             bool const safe, bool const star, PyObject *kwargs,
+                             PyObject *finalizer)
 {
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *key, *main_, *item_, *rest_ = PyTuple_New(len);
@@ -121,7 +130,7 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
         }
 
         // `result` is a new object, for which we are now responsible
-        result = _apply(callable, main_, rest_, safe, star, kwargs);
+        result = _apply(callable, main_, rest_, safe, star, kwargs, finalizer);
         if(result == NULL) {
             Py_DECREF(rest_);
 
@@ -148,7 +157,8 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
 
 
 static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest,
-                              bool const safe, bool const star, PyObject *kwargs)
+                              bool const safe, bool const star, PyObject *kwargs,
+                              PyObject *finalizer)
 {
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *main_, *item_, *rest_ = PyTuple_New(len);
@@ -175,7 +185,7 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        result = _apply(callable, main_, rest_, safe, star, kwargs);
+        result = _apply(callable, main_, rest_, safe, star, kwargs, finalizer);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
@@ -212,7 +222,8 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
 
 
 static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
-                             bool const safe, bool const star, PyObject *kwargs)
+                             bool const safe, bool const star, PyObject *kwargs,
+                             PyObject *finalizer)
 {
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *main_, *item_, *rest_ = PyTuple_New(len);
@@ -239,7 +250,7 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
             PyTuple_SET_ITEM(rest_, j, item_);
         }
 
-        result = _apply(callable, main_, rest_, safe, star, kwargs);
+        result = _apply(callable, main_, rest_, safe, star, kwargs, finalizer);
         if(result == NULL) {
             Py_DECREF(rest_);
             Py_DECREF(output);
@@ -260,7 +271,8 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
 
 
 static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *rest,
-                                bool const safe, bool const star, PyObject *kwargs)
+                                bool const safe, bool const star, PyObject *kwargs,
+                                PyObject *finalizer)
 {
     // XXX it's unlikely that we will ever use this branch, because as docs say
     //  it is impossible to know the type of keys of a mapping at runtime, hence
@@ -303,7 +315,7 @@ static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *re
 
         Py_DECREF(result);
 
-        result = _apply(callable, main_, rest_, safe, star, kwargs);
+        result = _apply(callable, main_, rest_, safe, star, kwargs, finalizer);
         if(result == NULL) break;
 
         PyDict_SetItem(output, key, result);
@@ -342,6 +354,7 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
         Py_DECREF(args);
 
     } else {
+        // tuple steals reference to args, so no need to decref it afterwards
         PyObject *one = PyTuple_New(1);
         PyTuple_SET_ITEM(one, 0, args);
 
@@ -354,7 +367,8 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
 
 
 PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
-                 bool const safe, bool const star, PyObject *kwargs)
+                 bool const safe, bool const star, PyObject *kwargs,
+                 PyObject *finalizer)
 {
     PyObject *result;
 
@@ -364,7 +378,7 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                 return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_dict(callable, main, rest, safe, star, kwargs);
+        result = _apply_dict(callable, main, rest, safe, star, kwargs, finalizer);
         Py_LeaveRecursiveCall();
 
     } else if(PyTuple_Check(main)) {
@@ -373,7 +387,7 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                 return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_tuple(callable, main, rest, safe, star, kwargs);
+        result = _apply_tuple(callable, main, rest, safe, star, kwargs, finalizer);
         Py_LeaveRecursiveCall();
 
     } else if(PyList_Check(main)) {
@@ -382,13 +396,29 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                 return NULL;
 
         if(Py_EnterRecursiveCall("")) return NULL;
-        result = _apply_list(callable, main, rest, safe, star, kwargs);
+        result = _apply_list(callable, main, rest, safe, star, kwargs, finalizer);
         Py_LeaveRecursiveCall();
 
     } else {
         result = _apply_base(callable, main, rest, star, kwargs);
 
     }
+
+    if(result == NULL)
+        return NULL;
+
+    // apply the finalizer
+    if(finalizer == NULL)
+        return result;
+
+    // emulate `PyObject_CallOneArg`: create a single-element tuple and call
+    // Conventionally, the called function increfs its returned value and
+    // transfers the owenership to the caller.
+    PyObject *single = PyTuple_New(1);
+    PyTuple_SET_ITEM(single, 0, result);
+
+    result = PyObject_Call(finalizer, single, NULL);
+    Py_DECREF(single);
 
     return result;
 }
@@ -420,7 +450,7 @@ PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
     // from the url at the top: {API 1.2.1} the call mechanism guarantees
     //  to hold a reference to every argument for the duration of the call.
     int safe = 1, star = 1;
-    PyObject *callable = NULL, *main = NULL, *rest = NULL;
+    PyObject *callable = NULL, *main = NULL, *rest = NULL, *finalizer=NULL;
 
     //handle `apply(fn, main, *rest, ...)`
     if(!parse_apply_args(args, &callable, &main, &rest))
@@ -428,7 +458,7 @@ PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
 
     //handle `apply(..., *, _star, _safe, **kwargs)`
     if (kwargs) {
-        static char *kwlist[] = {"_safe", "_star", NULL};
+        static char *kwlist[] = {"_safe", "_star", "_finalizer", NULL};
 
         PyObject *empty = PyTuple_New(0);
         if (empty == NULL) return NULL;
@@ -448,14 +478,19 @@ PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
         }
 
         int parsed = PyArg_ParseTupleAndKeywords(
-                empty, own, "|$pp:apply", kwlist, &safe, &star);
+                empty, own, "|$ppO:apply", kwlist, &safe, &star, &finalizer);
 
         Py_DECREF(empty);
         Py_DECREF(own);
         if (!parsed) return NULL;
+
+        if(finalizer != NULL && !PyCallable_Check(finalizer)) {
+            PyErr_SetString(PyExc_TypeError, "The finalizer must be a callable.");
+            return NULL;
+        }
     }
 
-    PyObject *result = _apply(callable, main, rest, safe, star, kwargs);
+    PyObject *result = _apply(callable, main, rest, safe, star, kwargs, finalizer);
     Py_DECREF(rest);
 
     return result;
