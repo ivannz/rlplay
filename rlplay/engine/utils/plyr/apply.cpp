@@ -89,6 +89,37 @@ static const char *__doc__ = "\n"
 ;
 
 
+PyObject *PyObject_CallWithSingleArg(
+    PyObject *callable,
+    PyObject *arg,
+    PyObject *kwargs)
+{
+    // much like `PyObject_CallOneArg`, but with optional kwargs:
+    //   create a one-element tuple, then call with it and kwargs
+    PyObject *single = PyTuple_New(1);
+    if(single == NULL) return NULL;
+
+    // `PyTuple_SET_ITEM` steals reference to `arg`, but we borrowed it from
+    //  the caller! Thus we first become its independent owner.
+    Py_INCREF(arg);
+    PyTuple_SET_ITEM(single, 0, arg);
+
+    // the called object increfs its returned value and transfers the ownership
+    //  to the caller, i.e. the act of RETURNING is in itself another reference
+    //  see https://docs.python.org/3/extending/extending.html#ownership-rules
+    //      https://stackoverflow.com/questions/57661466/
+    // (we may check refcounts of `output` and `arg` for `lambda x: x`)
+    PyObject *output = PyObject_Call(callable, single, kwargs);
+
+    // No need to relinquish ownership of `arg` (decref), since decrefing
+    //  a tuple decrefs all non-NULL items (tuple steals/assumes owenership,
+    //  instead of borrowing).
+    Py_DECREF(single);
+
+    return output;
+}
+
+
 PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
                  bool const safe, bool const star, PyObject *kwargs,
                  PyObject *finalizer);
@@ -352,16 +383,10 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
 
     if (star) {
         output = PyObject_Call(callable, args, kwargs);
-        Py_DECREF(args);
-
     } else {
-        // tuple steals reference to args, so no need to decref it afterwards
-        PyObject *one = PyTuple_New(1);
-        PyTuple_SET_ITEM(one, 0, args);
-
-        output = PyObject_Call(callable, one, kwargs);
-        Py_DECREF(one);
+        output = PyObject_CallWithSingleArg(callable, args, kwargs);
     }
+    Py_DECREF(args);
 
     return output;
 }
@@ -401,8 +426,8 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
         Py_LeaveRecursiveCall();
 
     } else {
-        // finalizer is only called on the inner/nested containers, and never
-        //  on the leaf data.
+        // The base case, i.e. having reached the leaf objects (non containers)
+        // is non recursive
         return _apply_base(callable, main, rest, star, kwargs);
     }
 
@@ -410,24 +435,10 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
     if(finalizer == NULL || result == NULL)
         return result;
 
-    // emulate `PyObject_CallOneArg`: create a single-element tuple, then call
-    PyObject *single = PyTuple_New(1);
-    if(single == NULL) {
-        Py_DECREF(result);
-        return NULL;
-    }
-
-    // the called object increfs its returned value and transfers the ownership
-    //  to the caller, i.e. the act of RETURNING is in itself another reference
-    //  see https://docs.python.org/3/extending/extending.html#ownership-rules
-    //      https://stackoverflow.com/questions/57661466/
-    // (we may check refcounts of `output` and `result` for `lambda x: x`)
-    PyTuple_SET_ITEM(single, 0, result);
-    PyObject *output = PyObject_Call(finalizer, single, NULL);
-
-    // No need to decref `result`, as decrefing a tuple decrefs all its
-    //  non-NULL items.
-    Py_DECREF(single);
+    // The finalizer is only called on the inner/nested containers, and never
+    //  on the leaf data
+    PyObject *output = PyObject_CallWithSingleArg(finalizer, result, NULL);
+    Py_DECREF(result);
 
     return output;
 }
