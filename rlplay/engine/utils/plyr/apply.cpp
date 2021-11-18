@@ -6,7 +6,9 @@
 // https://pythonextensionpatterns.readthedocs.io/en/latest/refcount.html
 
 
-static const char *__doc__ = "\n"
+PyDoc_STRVAR(
+    __doc__,
+    "\n"
     "apply(callable, *objects, _safe=True, _star=True, _finalizer=None, **kwargs)\n"
     "\n"
     "Compute the function using the leaf data of the nested objects as arguments.\n"
@@ -86,7 +88,7 @@ static const char *__doc__ = "\n"
     ">>>\n"
     ">>>     return fn(container, **kwargs)\n"
     "\n"
-;
+);
 
 
 PyObject *PyObject_CallWithSingleArg(

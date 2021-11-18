@@ -20,7 +20,9 @@ const PyMethodDef def_getitem = {
     "getitem",
     (PyCFunction) getitem,
     METH_VARARGS | METH_KEYWORDS,
-    "getitem(object, *, index) returns object[index]",
+    PyDoc_STR(
+        "getitem(object, *, index) returns object[index]"
+    ),
 };
 
 
@@ -40,7 +42,9 @@ const PyMethodDef def_xgetitem = {
     "xgetitem",
     (PyCFunction) xgetitem,
     METH_VARARGS | METH_KEYWORDS,
-    "`xgetitem` -- the same as `getitem`, but allows None through",
+    PyDoc_STR(
+        "`xgetitem` -- the same as `getitem`, but allows None through"
+    ),
 };
 
 
@@ -65,7 +69,9 @@ const PyMethodDef def_setitem = {
     "setitem",
     (PyCFunction) setitem,
     METH_VARARGS | METH_KEYWORDS,
-    "setitem(object, value, *, index) does object[index] = value",
+    PyDoc_STR(
+        "setitem(object, value, *, index) does object[index] = value"
+    ),
 };
 
 
@@ -85,7 +91,9 @@ const PyMethodDef def_xsetitem = {
     "xsetitem",
     (PyCFunction) xsetitem,
     METH_VARARGS | METH_KEYWORDS,
-    "`xsetitem` -- the same as `setitem`, but allows None through",
+    PyDoc_STR(
+        "`xsetitem` -- the same as `setitem`, but allows None through"
+    ),
 };
 
 
@@ -150,7 +158,9 @@ PyObject* dict_getrefs(PyObject *self, PyObject *dict)
 }
 
 
-const char *dict_getrefs__doc__ = "\n"
+PyDoc_STRVAR(
+    dict_getrefs__doc__,
+    "\n"
     "class Foo:\n"
     "    \"\"\"hashable mockup object\"\"\"\n"
     "    def __hash__(self):\n"
@@ -176,7 +186,7 @@ const char *dict_getrefs__doc__ = "\n"
     "d2 = dict_clone(d1)  # 5 key and item are increfed by `dict-setitem`\n"
     "print(dict_getrefs(d1))  # 5\n"
     "print(getrefcount(f))  # 5+1\n"
-;
+);
 
 
 const PyMethodDef def_dict_getrefs = {

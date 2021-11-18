@@ -2,7 +2,9 @@
 #include <validate.h>
 
 
-static const char *__doc__ = "\n"
+PyDoc_STRVAR(
+    __doc__,
+    "\n"
     "validate(*objects)\n"
     "\n"
     "Validate the structure of the nested objects (see `apply` and caveats).\n"
@@ -16,7 +18,7 @@ static const char *__doc__ = "\n"
     "    is a tuple with three elements: the index of the object in the arguments,\n"
     "    the type of the raised exception, and the value of the exception.\n"
     "\n"
-;
+);
 
 
 int _raise_TypeError(Py_ssize_t index, PyObject *main, PyObject *obj, objectstack *stack)

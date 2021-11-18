@@ -4,6 +4,15 @@
 #include <validate.h>
 #include <operations.h>
 
+
+PyDoc_STRVAR(
+    __doc__,
+    "\n"
+    "Streamlined operations on built-in nested containers of objects.\n"
+    "\n"
+    "see `plyr.apply`.\n"
+);
+
 // apply functions with preset _safe and _star kwargs
 // [ts][u_]apply -- t/s tuple or star args, u/_ unsafe or safe
 static PyObject* suply(PyObject *self, PyObject *args, PyObject *kwargs)
@@ -65,22 +74,30 @@ static PyMethodDef modplyr_methods[] = {
         "suply",
         (PyCFunction) suply,
         METH_VARARGS | METH_KEYWORDS,
-        "Star-apply without safety checks (use at your own risk).",
+        PyDoc_STR(
+            "Star-apply without safety checks (use at your own risk)."
+        ),
     }, {
         "tuply",
         (PyCFunction) tuply,
         METH_VARARGS | METH_KEYWORDS,
-        "Tuple-apply without safety checks (use at your own risk).",
+        PyDoc_STR(
+            "Tuple-apply without safety checks (use at your own risk)."
+        ),
     }, {
         "s_ply",
         (PyCFunction) s_ply,
         METH_VARARGS | METH_KEYWORDS,
-        "Star-apply with safety checks.",
+        PyDoc_STR(
+            "Star-apply with safety checks."
+        ),
     }, {
         "t_ply",
         (PyCFunction) t_ply,
         METH_VARARGS | METH_KEYWORDS,
-        "Tuple-apply with safety checks.",
+        PyDoc_STR(
+            "Tuple-apply with safety checks."
+        ),
     },
     def_getitem,
     def_setitem,
@@ -105,7 +122,7 @@ static PyMethodDef modplyr_methods[] = {
 static struct PyModuleDef moduledef = {
         PyModuleDef_HEAD_INIT,
         "plyr",
-        NULL,
+        __doc__,
         -1,
         modplyr_methods,
 };
