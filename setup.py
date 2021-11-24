@@ -3,7 +3,7 @@ from setuptools import setup, Extension
 setup(
     name='RLPlay',
     description="""Playing around with Reinforcement Learning.""",
-    version='0.6.2',
+    version='0.6.3',
     license='MIT',
     packages=[
         'rlplay',  # toy experiments, prototypes, and utilities
