@@ -45,9 +45,10 @@ PyDoc_STRVAR(
     "\n"
     "_finalizer : callable, optional\n"
     "    The finalizer object to be called when a nested container has been\n"
-    "    rebuilt. It is NEVER called on the output of `callable`, which is\n"
-    "    computed on the leaf python objects. No finalization takes place if\n"
-    "    the argument is OMITTED.\n"
+    "    rebuilt. It is NEVER called on the output of `callable` computed on\n"
+    "    the leaf python objects, ONLY on upon finishing the containers.\n"
+    "\n"
+    "    OMIT the `_finalizer` kwarg if finalization is NOT REQUIRED.\n"
     "\n"
     "Returns\n"
     "-------\n"
@@ -119,6 +120,37 @@ PyObject *PyObject_CallWithSingleArg(
     Py_DECREF(single);
 
     return output;
+}
+
+
+PyObject *PyDict_SplitItemStrings(
+    PyObject *dict,
+    char *keys[],
+    bool pop=false)
+{
+    // Pop the specified keys in a NULL-terminated str key list `keys` from
+    //  `dict` and put them into a new dict
+    // XXX warning, this manipulates the `dict` inplace unless `pop=false`!
+    PyObject* subdict = PyDict_New();
+    if (subdict == NULL)
+        return NULL;
+
+    // transfer (unless pop=false) objects' ownership from one dict into another
+    for(int p = 0; keys[p] != NULL; p++) {
+        PyObject* item = PyDict_GetItemString(dict, keys[p]);
+        if (item == NULL)
+            continue;
+
+        // PyDict_SetItem uses `Py_INCREF() to become an independent owner`
+        //  see https://docs.python.org/3/extending/extending.html#ownership-rules
+        PyDict_SetItemString(subdict, keys[p], item);  // increfs `item`
+
+        if(pop)
+            PyDict_DelItemString(dict, keys[p]);  // decrefs `item`
+    }
+
+    // could be an empty dict
+    return subdict;
 }
 
 
@@ -448,7 +480,12 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
 
 int parse_apply_args(PyObject *args, PyObject **callable, PyObject **main, PyObject **rest)
 {
+    // docs imply that `PyTuple_GetSlice` does not steal references to the elements
+    //  in the slice, meaning that the objects in it are increfed
     PyObject *first = PyTuple_GetSlice(args, 0, 2);
+    if (first == NULL)
+        return 0;
+
     int parsed = PyArg_ParseTuple(first, "OO|:apply", callable, main);
     Py_DECREF(first);
 
@@ -474,54 +511,66 @@ PyObject* apply(PyObject *self, PyObject *args, PyObject *kwargs)
     int safe = 1, star = 1;
     PyObject *callable = NULL, *main = NULL, *rest = NULL, *finalizer=NULL;
 
-    //handle `apply(fn, main, *rest, ...)`
+    // handle `apply(fn, main, *rest, ...)`
+    // XXX args remains the owner of the extracted objects, but it is guaranteed
+    // to stay alive during the call of `apply`, so no need to incref anything.
     if(!parse_apply_args(args, &callable, &main, &rest))
         return NULL;
 
-    //handle `apply(..., *, _star, _safe, **kwargs)`
+    // handle `apply(..., *, _star, _safe, _finalizer, **kwargs)`
+    // XXX if the finalizer is not required, the kwarg must be omitted.
     if (kwargs) {
         static char *kwlist[] = {"_safe", "_star", "_finalizer", NULL};
 
-        PyObject *empty = PyTuple_New(0);
-        if (empty == NULL) return NULL;
-
-        PyObject* own = PyDict_New();
-        if (empty == NULL) {
-            Py_DECREF(empty);
+        // Pop apply's kwargs from `kwargs` so that it could be passed along to
+        //  `_apply_base`.
+        PyObject* own = PyDict_SplitItemStrings(kwargs, kwlist, true);
+        if (own == NULL) {
+            Py_DECREF(rest);
             return NULL;
         }
 
-        for(int p = 0; kwlist[p] != NULL; p++) {
-            PyObject* arg = PyDict_GetItemString(kwargs, kwlist[p]);
-            if (arg == NULL) continue;
-
-            // PyDict_SetItem uses `Py_INCREF() to become an independent owner`
-            //  see https://docs.python.org/3/extending/extending.html#ownership-rules
-            PyDict_SetItemString(own, kwlist[p], arg);
-            PyDict_DelItemString(kwargs, kwlist[p]);
+        PyObject *empty = PyTuple_New(0);
+        if (empty == NULL) {
+            Py_DECREF(own);
+            Py_DECREF(rest);            
+            return NULL;
         }
 
-        // PyArg_ParseTupleAndKeywords does not do anythin with the owenrship
+        // PyArg_ParseTupleAndKeywords does not do anything with the ownership
         //  of `PyObject`, https://docs.python.org/3/c-api/arg.html#other-objects
         // Thus we hold on to the `finalizer` in case its only ref was
         //  the `kwargs`, which we tinkered with just above.
         int parsed = PyArg_ParseTupleAndKeywords(
-                empty, own, "|$ppO:apply", kwlist, &safe, &star, &finalizer);
-        Py_XINCREF(finalizer);
+            empty, own, "|$ppO:apply", kwlist, &safe, &star, &finalizer);
 
         Py_DECREF(empty);
-        Py_DECREF(own);
-        if (!parsed) return NULL;
-
-        if(finalizer != NULL && !PyCallable_Check(finalizer)) {
-            PyErr_SetString(PyExc_TypeError, "The finalizer must be a callable.");
+        if (!parsed) {
+            Py_DECREF(own);
+            Py_DECREF(rest);
             return NULL;
         }
+
+        // while `own` is alive we can be sure the finalizer it alive too
+        if(finalizer != NULL && !PyCallable_Check(finalizer)) {
+            PyErr_SetString(PyExc_TypeError, "The finalizer must be a callable.");
+
+            Py_DECREF(own);
+            Py_DECREF(rest);
+            return NULL;
+        }
+
+        // incref `finalizer` PRIOR to decrefing the temporary subdict `own`
+        Py_XINCREF(finalizer);  // incref unless NULL
+        Py_DECREF(own);
     }
 
-    PyObject *result = _apply(callable, main, rest, safe, star, kwargs, finalizer);
-    Py_DECREF(rest);
+    // make the call, then decref everything we might own
+    PyObject *result = _apply(
+        callable, main, rest, safe, star, kwargs, finalizer);
+
     Py_XDECREF(finalizer);
+    Py_DECREF(rest);
 
     return result;
 }
