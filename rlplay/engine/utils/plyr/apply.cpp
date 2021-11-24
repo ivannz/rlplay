@@ -115,7 +115,7 @@ PyObject *PyObject_CallWithSingleArg(
     PyObject *output = PyObject_Call(callable, single, kwargs);
 
     // No need to relinquish ownership of `arg` (decref), since decrefing
-    //  a tuple decrefs all non-NULL items (tuple steals/assumes owenership,
+    //  a tuple decrefs all non-NULL items (tuple steals/assumes ownership,
     //  instead of borrowing).
     Py_DECREF(single);
 
@@ -210,7 +210,7 @@ static PyObject* _apply_dict(
         if(result == NULL) {
             Py_DECREF(rest_);
 
-            // decrefing a dict also aplies decref to its contents
+            // decrefing a dict also applies decref to its contents
             Py_DECREF(output);
             return NULL;
         }

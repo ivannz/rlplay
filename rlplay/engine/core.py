@@ -405,7 +405,7 @@ def prepare(
     obs_, rew_, fin_, info_env = env.step(act_)
 
     # ensure correct data types for `rew_` (to float32) and `fin_` (to bool),
-    # while leaving `obs_` and `act_` intact as thery are nested containers of
+    # while leaving `obs_` and `act_` intact as they are nested containers of
     # numpy arrays or scalars with environment's proper dtypes.
     rew_, fin_, stepno_ = numpy.float32(rew_), bool(fin_), numpy.int64(0)
     # XXX `numpy.float32` inadvertently allows vector rewards

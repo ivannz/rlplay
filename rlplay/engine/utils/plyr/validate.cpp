@@ -286,10 +286,12 @@ PyObject* validate(PyObject *self, PyObject *args)
     if (rest == NULL)
         return NULL;
 
-    // the vector is ajust a temporary proxy for a list, and thus steals references
+    // the vector is adjust a temporary proxy for a list, and thus
+    //  steals references
     std::vector<PyObject *> stack = {};
 
-    // dfs through the structures: updates stack and set exceptions in case of an emergency
+    // dfs through the structures: updates stack and set exceptions
+    //  in case of an emergency
     _validate(main, rest, stack);
     Py_DECREF(rest);
 
