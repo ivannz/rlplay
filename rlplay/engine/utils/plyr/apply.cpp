@@ -126,7 +126,7 @@ PyObject *PyObject_CallWithSingleArg(
 PyObject *PyDict_SplitItemStrings(
     PyObject *dict,
     char *keys[],
-    bool pop=false)
+    const bool pop=false)
 {
     // Pop the specified keys in a NULL-terminated str key list `keys` from
     //  `dict` and put them into a new dict
@@ -154,14 +154,24 @@ PyObject *PyDict_SplitItemStrings(
 }
 
 
-PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
-                 bool const safe, bool const star, PyObject *kwargs,
-                 PyObject *finalizer);
+PyObject* _apply(
+    PyObject *callable,
+    PyObject *main,
+    PyObject *rest,
+    const bool safe,
+    const bool star,
+    PyObject *kwargs,
+    PyObject *finalizer);
 
 
-static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
-                             bool const safe, bool const star, PyObject *kwargs,
-                             PyObject *finalizer)
+static PyObject* _apply_dict(
+    PyObject *callable,
+    PyObject *main,
+    PyObject *rest,
+    const bool safe,
+    const bool star,
+    PyObject *kwargs,
+    PyObject *finalizer)
 {
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *key, *main_, *item_, *rest_ = PyTuple_New(len);
@@ -222,9 +232,14 @@ static PyObject* _apply_dict(PyObject *callable, PyObject *main, PyObject *rest,
 }
 
 
-static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest,
-                              bool const safe, bool const star, PyObject *kwargs,
-                              PyObject *finalizer)
+static PyObject* _apply_tuple(
+    PyObject *callable,
+    PyObject *main,
+    PyObject *rest,
+    const bool safe,
+    const bool star,
+    PyObject *kwargs,
+    PyObject *finalizer)
 {
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *main_, *item_, *rest_ = PyTuple_New(len);
@@ -287,9 +302,14 @@ static PyObject* _apply_tuple(PyObject *callable, PyObject *main, PyObject *rest
 }
 
 
-static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
-                             bool const safe, bool const star, PyObject *kwargs,
-                             PyObject *finalizer)
+static PyObject* _apply_list(
+    PyObject *callable,
+    PyObject *main,
+    PyObject *rest,
+    const bool safe,
+    const bool star,
+    PyObject *kwargs,
+    PyObject *finalizer)
 {
     Py_ssize_t len = PyTuple_GET_SIZE(rest);
     PyObject *main_, *item_, *rest_ = PyTuple_New(len);
@@ -336,9 +356,14 @@ static PyObject* _apply_list(PyObject *callable, PyObject *main, PyObject *rest,
 }
 
 
-static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *rest,
-                                bool const safe, bool const star, PyObject *kwargs,
-                                PyObject *finalizer)
+static PyObject* _apply_mapping(
+    PyObject *callable,
+    PyObject *main,
+    PyObject *rest,
+    const bool safe,
+    const bool star,
+    PyObject *kwargs,
+    PyObject *finalizer)
 {
     // XXX it's unlikely that we will ever use this branch, because as docs say
     //  it is impossible to know the type of keys of a mapping at runtime, hence
@@ -397,8 +422,12 @@ static PyObject* _apply_mapping(PyObject *callable, PyObject *main, PyObject *re
 }
 
 
-static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
-                             bool const star, PyObject *kwargs)
+static PyObject* _apply_base(
+    PyObject *callable,
+    PyObject *main,
+    PyObject *rest,
+    const bool star,
+    PyObject *kwargs)
 {
     PyObject *output;
 
@@ -426,9 +455,14 @@ static PyObject* _apply_base(PyObject *callable, PyObject *main, PyObject *rest,
 }
 
 
-PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
-                 bool const safe, bool const star, PyObject *kwargs,
-                 PyObject *finalizer)
+PyObject* _apply(
+    PyObject *callable,
+    PyObject *main,
+    PyObject *rest,
+    const bool safe,
+    const bool star,
+    PyObject *kwargs,
+    PyObject *finalizer)
 {
     PyObject *result;
 
@@ -478,7 +512,11 @@ PyObject* _apply(PyObject *callable, PyObject *main, PyObject *rest,
 }
 
 
-int parse_apply_args(PyObject *args, PyObject **callable, PyObject **main, PyObject **rest)
+int parse_apply_args(
+    PyObject *args,
+    PyObject **callable,
+    PyObject **main,
+    PyObject **rest)
 {
     // docs imply that `PyTuple_GetSlice` does not steal references to the elements
     //  in the slice, meaning that the objects in it are increfed
