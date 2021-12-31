@@ -53,15 +53,6 @@ class Actor(BaseActorModule):
 ```
 
 
-## `rlplay.engine.utils.plyr`
-
-There is no need for manual packing and unpacking nested objects and structured data (dicts, lists, tuples et.) that are potentially communicated/required by the environments and the actors. The collection process is oblivious to the structure of the observation and actions spaces, environment info-dicts and actor's auxiliary data, **provided** the internal data is compatible with pytorch `torch.as_tensor`. For example, python scalars, numpy arrays, and torch tensors are OK, but `str` or `bytes` are incompatible.
-
-In order to support arbitrary nested objects, I wrote a c-api implementation of a `map`-like functionality for nested objects with arbitrary inner data. See the dosctring of `.plyr.apply` for more details.
-
-`plyr` \[/plaɪ'ə/\] is derived from `applier`, but also happens to coincide with a similarly named library for [`R` statistical computations language](https://www.r-project.org/), which streamlines dataframe and vector/matrix transformations.
-
-
 ## Installation
 
 Although the rollout collection engine core API is stable, overall this research project is currently in unstable pre-release stage. Thus it has not been published at PyPI, so no `pip install rlplay` (atm, or ever). If you want to install the package, please use:
