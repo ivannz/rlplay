@@ -1,8 +1,9 @@
 import torch
 import numpy
 
+from plyr import suply, tuply, getitem, setitem
+
 from ..core import context, pyt_copy_, Fragment
-from ..utils import suply, tuply, getitem, setitem
 
 
 @torch.no_grad()

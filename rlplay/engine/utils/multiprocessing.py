@@ -2,7 +2,7 @@ import cloudpickle
 import numpy
 
 from ctypes import c_byte
-from .plyr import suply
+from plyr import suply
 
 import torch.multiprocessing as multiprocessing
 

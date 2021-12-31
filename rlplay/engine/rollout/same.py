@@ -1,9 +1,9 @@
 import torch
 import numpy
 
-from ..core import prepare, startup, collect
+from plyr import suply
 
-from ..utils.plyr import suply
+from ..core import prepare, startup, collect
 
 
 def rollout(envs, actor, n_steps=51, *, sticky=False, device=None):

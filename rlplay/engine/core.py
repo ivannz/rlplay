@@ -2,9 +2,9 @@ import torch
 import numpy
 
 from collections import namedtuple
+from plyr import suply, tuply, setitem, getitem
 
 from .utils import check_signature
-from .utils.plyr import suply, tuply, setitem, getitem
 from .utils.shared import aliased, torchify
 
 
@@ -52,8 +52,8 @@ State.__doc__ += "\n" + r"""
 
     See Also
     --------
-    For a detailed reference on nested objects see `engine.utils.plyr.apply`.
-    For more details on the semantics of the fields see `BaseActorModule.step`.
+    For a detailed reference on nested objects see `plyr.apply`. For more
+    details on the semantics of the fields see `BaseActorModule.step`.
     """
 
 Context = namedtuple('Context', ['state', 'hx', 'original_obs'])

@@ -1,9 +1,9 @@
-from setuptools import setup, Extension
+from setuptools import setup
 
 setup(
     name='RLPlay',
     description="""Playing around with Reinforcement Learning.""",
-    version='0.6.3',
+    version='0.6.4',
     license='MIT',
     packages=[
         'rlplay',  # toy experiments, prototypes, and utilities
@@ -23,27 +23,14 @@ setup(
 
         'rlplay.engine',  # core collector, fast c-api nested object support
         'rlplay.engine.rollout',  # rollout fragment collectors
-        'rlplay.engine.utils',  # multiprocessing, aliasing, and plyr
+        'rlplay.engine.utils',  # multiprocessing, and aliasing
     ],
     install_requires=[
         'torch',
         'numpy',
         'gym[atari]',
         'opencv-python',
+        'python-plyr',
         # 'pyglet',  # installed by gym anyway, but we still declare it here
-    ],
-    ext_modules=[
-        Extension(
-            'rlplay.engine.utils.plyr', [
-                'rlplay/engine/utils/plyr/plyr.cpp',
-                'rlplay/engine/utils/plyr/validate.cpp',
-                'rlplay/engine/utils/plyr/operations.cpp',
-                'rlplay/engine/utils/plyr/apply.cpp',
-            ], include_dirs=[
-                'rlplay/engine/utils/plyr/include'
-            ], extra_compile_args=[
-                '-O3', '-Ofast'
-            ], language='c++',
-        ),
     ],
 )

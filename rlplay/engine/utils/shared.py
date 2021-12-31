@@ -4,7 +4,7 @@ import numpy
 from ctypes import c_byte
 from collections import namedtuple
 
-from .plyr import suply
+from plyr import suply
 
 Aliased = namedtuple('Aliased', ['npy', 'pyt'])
 Aliased.__doc__ = """An aliased pair of numpy-torch data.

@@ -9,8 +9,9 @@ from numpy.random import SeedSequence
 from copy import deepcopy
 from collections import namedtuple
 
+from plyr import suply, setitem, getitem
+
 from ..core import context, pyt_copy_
-from ..utils.plyr import suply, setitem, getitem
 from ..utils import check_signature
 
 from ..utils.multiprocessing import get_context, CloudpickleSpawner

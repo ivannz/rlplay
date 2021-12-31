@@ -8,11 +8,12 @@ from collections import namedtuple
 
 from queue import Empty as QueueEmpty
 
+from plyr import suply, tuply, getitem
+
 from ..core import prepare, startup, collect
 
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.multiprocessing import start_processes
-from ..utils.plyr import suply, tuply, getitem
 from ..utils.shared import Aliased, numpify, torchify
 from ..utils import check_signature
 

@@ -11,9 +11,10 @@ from numpy.random import SeedSequence
 from copy import deepcopy
 from collections import namedtuple
 
+from plyr import suply
+
 from ..core import prepare, startup, collect
 
-from ..utils.plyr import suply
 from ..utils.multiprocessing import get_context, CloudpickleSpawner
 from ..utils.shared import Aliased, numpify, torchify
 from ..utils import check_signature

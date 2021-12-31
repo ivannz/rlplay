@@ -1,4 +1,6 @@
-from .plyr import suply, tuply, setitem, getitem
+import plyr
+from plyr import suply, tuply, setitem, getitem
+
 from .shared import aliased, torchify, numpify
 
 from inspect import signature
