@@ -581,7 +581,7 @@ class VQEmbedding(torch.nn.Embedding):
         # compute the perplexity
         # x -- input, y -- target: get `- \sum_n y_n (\log y_n - x_n)`
         counts = inx.flatten().bincount(minlength=self.num_embeddings)
-        entropy = -F.kl_div(torch.tensor([0.]), counts / inx.numel(),
+        entropy = -F.kl_div(x.new_zeros(()), counts / inx.numel(),
                             log_target=False, reduction='sum')
 
         return inx, entropy.exp()
@@ -613,8 +613,8 @@ class VQEmbedding(torch.nn.Embedding):
         vectors = self.fetch(indices, at=1)
 
         # commitment loss terms (identical in value, but not in backprop graph)
-        emb_loss = F.mse_loss(vectors, input.detach(), reduction='mean')
-        enc_loss = F.mse_loss(input, vectors.detach(), reduction='mean')
+        emb_loss = F.mse_loss(vectors, input.detach(), reduction='sum')
+        enc_loss = F.mse_loss(input, vectors.detach(), reduction='sum')
 
         # build the staright-through grad estimator
         output = input + (vectors - input).detach()
