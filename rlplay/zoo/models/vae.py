@@ -502,6 +502,68 @@ class VQEmbedding(torch.nn.Embedding):
     to produce the latents, which are consistent with the cluster they are
     assigned to.
     """
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        alpha: float = 0.,
+        eps: float = 1e-5,
+    ) -> None:
+        super().__init__(
+            num_embeddings,
+            embedding_dim,
+            max_norm=None,
+            padding_idx=None,
+            scale_grad_by_freq=False,
+            sparse=False,
+        )
+
+        self.alpha, self.eps = alpha, eps
+
+        # if `alpha` is zero then `.weight` is updated by other means
+        self.register_buffer('ema_vecs', None)
+        self.register_buffer('ema_size', None)
+        if self.alpha <= 0:
+            return
+
+        # allocate buffer for tracking k-means cluster cenrtoid updates
+        self.register_buffer(
+            'ema_vecs', torch.zeros_like(torch.zeros_like(self.weight)),
+        )
+        self.register_buffer(
+            'ema_size', torch.zeros_like(self.ema_vecs[:, 0]),
+        )
+
+        # demote `.weight` to a buffer and disable backprop for it
+        # XXX can promote buffer to parameter, but not back, so we `delattr`.
+        #  Also non-inplace `.detach` creates a copy not reflected in referrers.
+        weight = self.weight
+        delattr(self, 'weight')
+        self.register_buffer('weight', weight.detach_())
+
+    @torch.no_grad()
+    def _update(self, input, indices):
+        """Update the embedding vectors by Exponential Moving Average.
+        """
+
+        # `input` is `B x F x *spatial`, `indices` are `B x *spatial`
+        affinity = F.one_hot(indices.flatten(), self.num_embeddings).to(input)
+        # XXX 'affinity' is `[B x *spatial] x C`
+
+        # sum the F-dim input vectors into bins by affinity
+        upd_vecs = input.transpose(0, 1).flatten(1, -1) @ affinity
+        upd_size = affinity.sum(0)  # torch.bincount(ix.flatten())
+
+        # track cluster size and unnormalized vecs with EMA
+        self.ema_vecs.lerp_(upd_vecs.T, self.alpha)
+        self.ema_size.lerp_(upd_size, self.alpha)
+
+        # Apply \epsilon-Laplace correction
+        n = self.ema_size.sum()
+        coef = n / (n + self.num_embeddings * self.eps)
+        size = coef * (self.ema_size + self.eps).unsqueeze(1)
+        self.weight.data.copy_(self.ema_vecs / size)
+
     @torch.no_grad()
     def lookup(self, input: torch.Tensor):
         """Lookup the index of the nearest embedding."""
@@ -556,4 +618,9 @@ class VQEmbedding(torch.nn.Embedding):
 
         # build the staright-through grad estimator
         output = input + (vectors - input).detach()
-        return output, emb_loss, enc_loss, perplexity
+
+        # update the weights only if we are in training mode
+        if self.training and self.alpha > 0:
+            self._update(input, indices)
+
+        return output, emb_loss, enc_loss, float(perplexity)
