@@ -542,20 +542,20 @@ class VQEmbedding(torch.nn.Embedding):
         self.register_buffer('weight', weight.detach_())
 
     @torch.no_grad()
-    def _update(self, input, indices):
+    def _update(self, input: torch.Tensor, indices: torch.LongTensor):
         """Update the embedding vectors by Exponential Moving Average.
         """
-
         # `input` is `B x F x *spatial`, `indices` are `B x *spatial`
-        affinity = F.one_hot(indices.flatten(), self.num_embeddings).to(input)
-        # XXX 'affinity' is `[B x *spatial] x C`
+        affinity = F.one_hot(indices, self.num_embeddings).to(input)
+        # XXX 'affinity' is `B x *spatial x C`
 
         # sum the F-dim input vectors into bins by affinity
-        upd_vecs = input.transpose(0, 1).flatten(1, -1) @ affinity
-        upd_size = affinity.sum(0)  # torch.bincount(ix.flatten())
+        # XXX can also use torch.bincount(ix.flatten())
+        upd_vecs = torch.einsum('bf..., b...c -> cf', input, affinity)
+        upd_size = torch.einsum('...c -> c', affinity)
 
         # track cluster size and unnormalized vecs with EMA
-        self.ema_vecs.lerp_(upd_vecs.T, self.alpha)
+        self.ema_vecs.lerp_(upd_vecs, self.alpha)
         self.ema_size.lerp_(upd_size, self.alpha)
 
         # Apply \epsilon-Laplace correction
@@ -616,7 +616,7 @@ class VQEmbedding(torch.nn.Embedding):
         emb_loss = F.mse_loss(vectors, input.detach(), reduction='sum')
         enc_loss = F.mse_loss(input, vectors.detach(), reduction='sum')
 
-        # build the staright-through grad estimator
+        # build the straight-through grad estimator
         output = input + (vectors - input).detach()
 
         # update the weights only if we are in training mode
